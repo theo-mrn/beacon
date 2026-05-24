@@ -1,0 +1,20 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: beacon
+  namespace: {{ .Values.namespace }}
+spec:
+  entryPoints:
+    - {{ if .Values.ingress.tls }}websecure{{ else }}web{{ end }}
+  routes:
+    - kind: Rule
+      match: Host(`{{ .Values.ingress.host }}`)
+      services:
+        - name: beacon
+          port: {{ .Values.service.port }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    certResolver: letsencrypt
+  {{- end }}
+{{- end }}

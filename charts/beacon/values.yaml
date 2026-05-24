@@ -1,0 +1,47 @@
+image:
+  repository: ghcr.io/theo-mrn/beacon
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Namespace où beacon sera déployé
+namespace: beacon
+
+# Port du dashboard web
+service:
+  port: 8080
+
+# Ingress (IngressRoute Traefik) pour exposer le dashboard
+ingress:
+  enabled: false
+  host: beacon.cluster.local
+  tls: false
+
+# Ressources du pod
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    cpu: 50m
+    memory: 128Mi
+
+# Persistance SQLite pour le tracking temporel (NEW / MODIFIED)
+persistence:
+  enabled: true
+  size: 256Mi
+  storageClass: ""   # laisser vide = storageClass par défaut du cluster
+
+# Intégration Trivy (optionnel)
+# Si ton dashboard Trivy est accessible, renseigne l'URL ici
+# Les VulnerabilityReports seront automatiquement détectés si la CRD existe
+trivy:
+  dashboardURL: ""   # ex: https://trivyhub.cluster.afflair.app
+
+# Notifications webhook (optionnel)
+# Remplis les URLs pour activer les alertes sur les nouveaux endpoints HIGH
+# Ces valeurs surchargent le scoring.yaml embarqué
+webhooks:
+  slack: ""
+  teams: ""
+  discord: ""
+  generic: ""

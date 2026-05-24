@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Beacon — KubeSurfaceScanner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Plus Jakarta Sans', 'sans-serif'] },
+        }
+      }
+    }
+  </script>
+  <style>
+    * { font-family: 'Plus Jakarta Sans', sans-serif; }
+    body { background: #F1F5F9; color: #0F172A; }
+
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 99px; }
+
+    /* Sidebar nav item */
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 7px 12px; border-radius: 8px;
+      font-size: 13.5px; font-weight: 500; color: #64748B;
+      cursor: pointer; transition: all .15s; text-decoration: none;
+    }
+    .nav-item:hover { background: #F1F5F9; color: #1E293B; }
+    .nav-item.active { background: #F1F5F9; color: #0F172A; font-weight: 600; }
+    .nav-item .icon { width: 16px; height: 16px; flex-shrink: 0; }
+
+    /* Namespace list item in sidebar */
+    .ns-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 5px 10px; border-radius: 6px;
+      font-size: 12.5px; font-weight: 500; color: #64748B;
+      cursor: pointer; transition: all .12s;
+    }
+    .ns-item:hover { background: #F1F5F9; color: #1E293B; }
+    .ns-item.active { background: #EFF6FF; color: #1D4ED8; }
+
+    /* Tab */
+    .tab { border-bottom: 2px solid transparent; transition: all .15s; padding: 10px 0; font-size: 13.5px; font-weight: 500; cursor: pointer; }
+    .tab.active { border-bottom-color: #0F172A; color: #0F172A; }
+    .tab:not(.active) { color: #94A3B8; }
+    .tab:not(.active):hover { color: #475569; }
+
+    /* Filter chip */
+    .chip { transition: all .12s; cursor: pointer; user-select: none; }
+    .chip.on-all  { background:#0F172A; color:#fff; border-color:#0F172A; }
+    .chip.on-high { background:#FEE2E2; color:#B91C1C; border-color:#FECACA; }
+    .chip.on-med  { background:#FEF3C7; color:#B45309; border-color:#FDE68A; }
+    .chip.on-low  { background:#D1FAE5; color:#065F46; border-color:#A7F3D0; }
+    .chip:not([class*="on-"]):hover { background:#F8FAFC; }
+
+    /* Table */
+    .tr-row { transition: background .1s; }
+    .tr-row:hover { background: #F8FAFC; }
+
+    /* Live pulse */
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+    .live-pulse { animation: pulse 2s ease-in-out infinite; }
+
+    /* Sidebar collapse transition */
+    #sidebar { transition: width .2s ease; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .live-pulse,.tab,.chip,.tr-row,.nav-item,.ns-item,#sidebar { animation:none; transition:none; }
+    }
+  </style>
+</head>
+<body class="h-screen flex overflow-hidden">
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     SIDEBAR
+═══════════════════════════════════════════════════════════════════════════ -->
+<aside id="sidebar" class="w-56 flex-shrink-0 bg-white border-r border-slate-200 flex flex-col h-full overflow-hidden">
+
+  <!-- Logo -->
+  <div class="px-4 py-4 border-b border-slate-100 flex items-center gap-2.5 flex-shrink-0">
+    <div class="w-7 h-7 rounded-lg bg-slate-900 flex items-center justify-center flex-shrink-0">
+      <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
+      </svg>
+    </div>
+    <div class="sidebar-label overflow-hidden">
+      <div class="font-semibold text-slate-900 text-sm leading-tight whitespace-nowrap">Beacon</div>
+      <div class="text-slate-400 text-xs whitespace-nowrap">KubeSurfaceScanner</div>
+    </div>
+  </div>
+
+  <!-- Navigation principale -->
+  <nav class="px-3 pt-4 pb-2 flex-shrink-0 space-y-0.5">
+    <a class="nav-item active" onclick="switchTab('table')" data-tab="table">
+      <svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125"/>
+      </svg>
+      <span class="sidebar-label whitespace-nowrap">Tableau</span>
+    </a>
+    <a class="nav-item" onclick="switchTab('ns')" data-tab="ns">
+      <svg class="icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25"/>
+      </svg>
+      <span class="sidebar-label whitespace-nowrap">Par namespace</span>
+    </a>
+  </nav>
+
+  <!-- Séparateur + section Risque -->
+  <div class="px-3 pt-4 flex-shrink-0">
+    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider px-2 mb-2 sidebar-label">Risque</p>
+    <div class="space-y-0.5">
+      <button class="ns-item w-full text-left active" onclick="setRisk('ALL')" id="risk-all">
+        <span class="sidebar-label">Tous les niveaux</span>
+        <span id="count-all" class="text-xs font-mono bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded sidebar-label"></span>
+      </button>
+      <button class="ns-item w-full text-left" onclick="setRisk('HIGH')" id="risk-high">
+        <span class="flex items-center gap-2 sidebar-label">
+          <span class="w-2 h-2 rounded-full bg-red-500 flex-shrink-0"></span>HIGH
+        </span>
+        <span id="count-high" class="text-xs font-mono bg-red-50 text-red-600 px-1.5 py-0.5 rounded sidebar-label"></span>
+      </button>
+      <button class="ns-item w-full text-left" onclick="setRisk('MEDIUM')" id="risk-med">
+        <span class="flex items-center gap-2 sidebar-label">
+          <span class="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0"></span>MEDIUM
+        </span>
+        <span id="count-med" class="text-xs font-mono bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded sidebar-label"></span>
+      </button>
+      <button class="ns-item w-full text-left" onclick="setRisk('LOW')" id="risk-low">
+        <span class="flex items-center gap-2 sidebar-label">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0"></span>LOW
+        </span>
+        <span id="count-low" class="text-xs font-mono bg-emerald-50 text-emerald-600 px-1.5 py-0.5 rounded sidebar-label"></span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Section Namespaces -->
+  <div class="px-3 pt-5 flex-1 overflow-y-auto min-h-0">
+    <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider px-2 mb-2 sidebar-label">Namespaces</p>
+    <div id="ns-list" class="space-y-0.5">
+      <!-- rempli par JS -->
+    </div>
+  </div>
+
+  <!-- Footer live indicator -->
+  <div class="px-4 py-3 border-t border-slate-100 flex-shrink-0 flex items-center gap-2">
+    <span id="live-dot" class="w-2 h-2 rounded-full bg-emerald-500 live-pulse flex-shrink-0"></span>
+    <span id="live-label" class="text-xs text-slate-500 sidebar-label whitespace-nowrap">En direct</span>
+  </div>
+</aside>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     MAIN
+═══════════════════════════════════════════════════════════════════════════ -->
+<div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+
+  <!-- Header top bar -->
+  <header class="bg-white border-b border-slate-200 px-5 py-3 flex items-center justify-between flex-shrink-0">
+    <div class="flex items-center gap-3">
+      <!-- Toggle sidebar -->
+      <button onclick="toggleSidebar()" class="p-1.5 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer" title="Masquer / afficher la sidebar">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12"/>
+        </svg>
+      </button>
+      <div class="w-px h-4 bg-slate-200"></div>
+      <!-- Tabs -->
+      <div class="flex items-center gap-5">
+        <button data-tab="table" class="tab active" onclick="switchTab('table')">Tableau</button>
+        <button data-tab="ns"    class="tab"        onclick="switchTab('ns')">Par namespace</button>
+      </div>
+    </div>
+
+    <!-- Score + stats -->
+    <div id="header-stats" class="flex items-center gap-4">{{.HeaderStats}}</div>
+  </header>
+
+  <!-- Content -->
+  <main class="flex-1 overflow-y-auto p-5">
+
+    <!-- Vue Tableau -->
+    <div id="view-table">
+      <div class="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-slate-200 bg-slate-50">
+              <th class="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide px-4 py-3 w-28">Risque</th>
+              <th class="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide px-4 py-3 w-36">Type</th>
+              <th class="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide px-4 py-3 w-36">Namespace</th>
+              <th class="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide px-4 py-3">URL / Destination</th>
+              <th class="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide px-4 py-3 w-56">Ports</th>
+              <th class="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide px-4 py-3 w-28">Pods</th>
+            </tr>
+          </thead>
+          <tbody id="table-body">{{.TableRows}}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Vue Namespace -->
+    <div id="view-ns" class="hidden">
+      <div id="ns-groups" class="flex flex-col gap-3">{{.NsGroups}}</div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let DATA       = { table:'', ns:'', header:'', namespaces:[], counts:{} };
+let activeTab  = 'table';
+let activeRisk = 'ALL';
+let activeNs   = '';
+let sidebarOpen = true;
+
+// ── SSE ───────────────────────────────────────────────────────────────────────
+const es = new EventSource('/stream');
+es.addEventListener('update', e => {
+  DATA = JSON.parse(e.data);
+  render();
+  syncSidebarNs(DATA.namespaces || []);
+  syncRiskCounts(DATA.counts || {});
+  document.getElementById('live-dot').className = 'w-2 h-2 rounded-full bg-emerald-500 live-pulse flex-shrink-0';
+  document.getElementById('live-label').textContent = 'En direct';
+});
+es.onerror = () => {
+  document.getElementById('live-dot').className = 'w-2 h-2 rounded-full bg-red-500 flex-shrink-0';
+  document.getElementById('live-label').textContent = 'Reconnexion…';
+};
+
+// ── Sidebar toggle ────────────────────────────────────────────────────────────
+function toggleSidebar() {
+  sidebarOpen = !sidebarOpen;
+  const sb = document.getElementById('sidebar');
+  if (sidebarOpen) {
+    sb.style.width = '224px';
+    sb.querySelectorAll('.sidebar-label').forEach(el => el.style.display = '');
+  } else {
+    sb.style.width = '52px';
+    sb.querySelectorAll('.sidebar-label').forEach(el => el.style.display = 'none');
+  }
+}
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function switchTab(tab) {
+  activeTab = tab;
+  // header tabs
+  document.querySelectorAll('[data-tab]').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  document.getElementById('view-table').classList.toggle('hidden', tab !== 'table');
+  document.getElementById('view-ns').classList.toggle('hidden',    tab !== 'ns');
+}
+
+// ── Risk filter ───────────────────────────────────────────────────────────────
+function setRisk(r) {
+  activeRisk = r;
+  ['all','high','med','low'].forEach(id => {
+    document.getElementById('risk-'+id).classList.remove('active');
+  });
+  const map = { ALL:'all', HIGH:'high', MEDIUM:'med', LOW:'low' };
+  const el = document.getElementById('risk-' + (map[r] || 'all'));
+  if (el) el.classList.add('active');
+  render();
+}
+
+// ── Namespace filter ──────────────────────────────────────────────────────────
+function setNs(ns) {
+  activeNs = ns;
+  document.querySelectorAll('.ns-filter-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.ns === ns);
+  });
+  render();
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function render() {
+  document.getElementById('header-stats').innerHTML = DATA.header || '';
+
+  // Table
+  const tBody = document.getElementById('table-body');
+  if (DATA.table) {
+    const tmp = document.createElement('tbody');
+    tmp.innerHTML = DATA.table;
+    const rows = Array.from(tmp.querySelectorAll('tr[data-risk]'));
+    const filtered = rows.filter(r => {
+      const riskOk = activeRisk === 'ALL' || r.dataset.risk === activeRisk;
+      const nsOk   = !activeNs  || r.dataset.ns === activeNs;
+      return riskOk && nsOk;
+    });
+    tBody.innerHTML = filtered.length
+      ? filtered.map(r => r.outerHTML).join('')
+      : '<tr><td colspan="6" class="text-center py-16 text-slate-400 text-sm">Aucun endpoint pour ces filtres</td></tr>';
+  }
+
+  // NS groups
+  const nsContainer = document.getElementById('ns-groups');
+  if (DATA.ns) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = DATA.ns;
+    const groups = Array.from(tmp.querySelectorAll('[data-nsgroup]'));
+    const filtered = groups.filter(g => {
+      if (activeNs && g.dataset.nsgroup !== activeNs) return false;
+      const cards = g.querySelectorAll('[data-risk]');
+      let visible = 0;
+      cards.forEach(c => {
+        const show = activeRisk === 'ALL' || c.dataset.risk === activeRisk;
+        c.style.display = show ? '' : 'none';
+        if (show) visible++;
+      });
+      return visible > 0;
+    });
+    nsContainer.innerHTML = filtered.length
+      ? filtered.map(g => g.outerHTML).join('')
+      : '<p class="text-slate-400 text-sm text-center py-16">Aucun endpoint pour ces filtres</p>';
+  }
+}
+
+// ── Sidebar namespace list ────────────────────────────────────────────────────
+function syncSidebarNs(namespaces) {
+  const list = document.getElementById('ns-list');
+  const items = [
+    `<button class="ns-filter-item ns-item w-full text-left ${activeNs===''?'active':''}" data-ns="" onclick="setNs('')">
+      <span class="sidebar-label">Tous</span>
+    </button>`
+  ];
+  namespaces.forEach(ns => {
+    items.push(`<button class="ns-filter-item ns-item w-full text-left ${activeNs===ns?'active':''}" data-ns="${ns}" onclick="setNs('${ns}')">
+      <span class="sidebar-label truncate">${ns}</span>
+    </button>`);
+  });
+  list.innerHTML = items.join('');
+  if (!sidebarOpen) list.querySelectorAll('.sidebar-label').forEach(el => el.style.display='none');
+}
+
+// ── Sidebar risk counts ───────────────────────────────────────────────────────
+function syncRiskCounts(counts) {
+  const total = (counts.HIGH||0) + (counts.MEDIUM||0) + (counts.LOW||0);
+  document.getElementById('count-all').textContent  = total;
+  document.getElementById('count-high').textContent = counts.HIGH  || 0;
+  document.getElementById('count-med').textContent  = counts.MEDIUM|| 0;
+  document.getElementById('count-low').textContent  = counts.LOW   || 0;
+}
+</script>
+</body>
+</html>

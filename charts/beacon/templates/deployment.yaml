@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beacon
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: beacon
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: beacon
+  template:
+    metadata:
+      labels:
+        app: beacon
+      annotations:
+        # Force un redéploiement si le scoring.yaml change
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: beacon
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: beacon
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              name: http
+          env:
+            - name: BEACON_DB
+              value: /var/lib/beacon/beacon.db
+            {{- if .Values.trivy.dashboardURL }}
+            - name: TRIVY_DASHBOARD_URL
+              value: {{ .Values.trivy.dashboardURL | quote }}
+            {{- end }}
+            {{- if .Values.webhooks.slack }}
+            - name: WEBHOOK_SLACK
+              value: {{ .Values.webhooks.slack | quote }}
+            {{- end }}
+            {{- if .Values.webhooks.teams }}
+            - name: WEBHOOK_TEAMS
+              value: {{ .Values.webhooks.teams | quote }}
+            {{- end }}
+            {{- if .Values.webhooks.discord }}
+            - name: WEBHOOK_DISCORD
+              value: {{ .Values.webhooks.discord | quote }}
+            {{- end }}
+            {{- if .Values.webhooks.generic }}
+            - name: WEBHOOK_GENERIC
+              value: {{ .Values.webhooks.generic | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: scoring-config
+              mountPath: /etc/beacon
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/beacon
+          resources:
+            requests:
+              cpu: {{ .Values.resources.requests.cpu }}
+              memory: {{ .Values.resources.requests.memory }}
+            limits:
+              cpu: {{ .Values.resources.limits.cpu }}
+              memory: {{ .Values.resources.limits.memory }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: scoring-config
+          configMap:
+            name: beacon-scoring
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: beacon-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

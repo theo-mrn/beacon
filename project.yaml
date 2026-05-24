@@ -1,0 +1,99 @@
+project:
+  name: KubeSurfaceScanner
+  version: 0.1.0-alpha
+  description: Outil d'analyse et de cartographie en temps réel de la surface d'attaque réseau (Ingress, Egress, NodePort) d'un cluster Kubernetes.
+
+objectives:
+  primary: 
+    - Offrir une visibilité instantanée sur tous les services exposés à l'extérieur.
+  secondary: 
+    - Détecter les mauvaises configurations (ex: Base de données en NodePort).
+    - Fournir un dashboard léger et compréhensible pour les équipes DevSecOps.
+  constraints:
+    - Ne pas impacter les performances du cluster (outil read-only).
+    - Fonctionner sans agent lourd sur chaque noeud (approche API-centric).
+
+technologies:
+  agent_collector:
+    language: Go (Golang)
+    library: k8s.io/client-go (Informers & Watchers)
+  database:
+    type: SQLite (ou Cache en mémoire vive / map Go)
+  dashboard:
+    backend: Go (net/http)
+    frontend: HTML5 + HTMX (pour le temps réel sans JS complexe) + TailwindCSS
+  infrastructure_test:
+    local: k3d (Kubernetes in Docker)
+    ci_cd: GitHub Actions avec clusters éphémères (KinD)
+
+architecture:
+  components:
+    - name: KubeWatcher
+      role: Écoute l'API K8s pour les événements sur Services, Ingress, et IngressRoutes (Traefik).
+    - name: AggregationEngine
+      role: Croise les données pour créer la chaîne de liaison (FQDN -> Ingress -> Service -> Pod).
+    - name: RiskScorer
+      role: Ajoute un flag (Low, Medium, High) selon le type d'exposition.
+    - name: WebServer
+      role: Expose le Dashboard sur le port 8080.
+
+resources_needed:
+  - Ordinateur local avec Docker installé.
+  - Kubectl configuré avec un cluster de test local (k3d).
+  - Éditeur de code (VSCode, Goland, etc.).
+
+success_metrics:
+  performance:
+    - latency: Détection d'un nouveau service exposé en moins de 2 secondes.
+    - footprint: Consommation CPU < 50m, RAM < 100Mi.
+  functional:
+    - Cartographie 100% exacte des objets IngressRoute (Traefik) et Services (NodePort/LoadBalancer).
+    - Déploiement via un simple manifeste `Deployment` avec son `ServiceAccount` dédié.
+
+backlog:
+  phase_1_setup:
+    - id: T-101
+      title: "Initialiser le cluster local"
+      status: "todo"
+      action: "k3d cluster create dev-sec-tools"
+    - id: T-102
+      title: "Créer le manifeste RBAC (ClusterRole, ServiceAccount)"
+      status: "todo"
+  
+  phase_2_collection:
+    - id: T-201
+      title: "Initialiser le projet Go et configurer client-go avec le kubeconfig local"
+      status: "todo"
+    - id: T-202
+      title: "Écrire le Watcher pour les Services (filtrer NodePort et LoadBalancer)"
+      status: "todo"
+    - id: T-203
+      title: "Écrire le Watcher pour les Ingress / IngressRoutes Traefik"
+      status: "todo"
+
+  phase_3_logic_and_api:
+    - id: T-301
+      title: "Créer le modèle de données interne (struct Go) pour croiser Ingress et Service"
+      status: "todo"
+    - id: T-302
+      title: "Implémenter les règles de scoring (ex: si port 3306 exposé -> Alerte)"
+      status: "todo"
+
+  phase_4_dashboard:
+    - id: T-401
+      title: "Créer le serveur web HTTP basique"
+      status: "todo"
+    - id: T-402
+      title: "Intégrer le template HTML avec TailwindCSS"
+      status: "todo"
+    - id: T-403
+      title: "Ajouter HTMX pour le rafraîchissement dynamique du tableau"
+      status: "todo"
+
+  phase_5_deployment:
+    - id: T-501
+      title: "Créer le Dockerfile de l'application (multi-stage build)"
+      status: "todo"
+    - id: T-502
+      title: "Créer le manifeste de déploiement (Deployment + Service) K8s"
+      status: "todo"

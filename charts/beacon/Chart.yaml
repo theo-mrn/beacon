@@ -1,0 +1,6 @@
+apiVersion: v2
+name: beacon
+description: KubeSurfaceScanner — real-time Kubernetes attack surface scanner
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

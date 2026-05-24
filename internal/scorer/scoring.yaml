@@ -1,0 +1,57 @@
+# Beacon — règles de scoring
+# Modifie ce fichier pour ajuster les niveaux de risque sans recompiler.
+# Niveaux valides : HIGH, MEDIUM, LOW
+
+# Ports considérés comme sensibles
+ports:
+  - port: 22
+    name: SSH
+    risk: HIGH
+  - port: 23
+    name: Telnet
+    risk: HIGH
+  - port: 3306
+    name: MySQL
+    risk: HIGH
+  - port: 5432
+    name: PostgreSQL
+    risk: HIGH
+  - port: 6379
+    name: Redis
+    risk: HIGH
+  - port: 27017
+    name: MongoDB
+    risk: HIGH
+  - port: 9200
+    name: Elasticsearch
+    risk: HIGH
+  - port: 9300
+    name: Elasticsearch (cluster)
+    risk: HIGH
+  - port: 2379
+    name: etcd
+    risk: HIGH
+  - port: 2380
+    name: etcd (peer)
+    risk: HIGH
+  - port: 5984
+    name: CouchDB
+    risk: HIGH
+  - port: 8086
+    name: InfluxDB
+    risk: HIGH
+
+# Notifications webhook (optionnel — laisser vide pour désactiver)
+webhooks:
+  slack: ""    # https://hooks.slack.com/services/xxx
+  teams: ""    # https://xxx.webhook.office.com/xxx
+  discord: ""  # https://discord.com/api/webhooks/xxx
+  generic: ""  # n'importe quelle URL JSON POST
+
+# Score par défaut selon le type d'exposition
+# (appliqué si aucun port sensible n'est détecté)
+exposure_defaults:
+  NodePort: MEDIUM
+  LoadBalancer: MEDIUM
+  Ingress: LOW
+  IngressRoute: LOW
