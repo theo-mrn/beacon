@@ -26,3 +26,15 @@
   .btn-primary { @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-black text-sm font-semibold hover:bg-accent/90 transition-colors duration-150 cursor-pointer; }
   .btn-ghost { @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium text-foreground-muted hover:text-foreground hover:bg-surface-2 transition-all duration-150 cursor-pointer; }
 }
+
+/* React Flow dark theme overrides */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: #475569;
+  --xy-controls-button-background-color: theme('colors.surface');
+  --xy-controls-button-background-color-hover: theme('colors.surface-2');
+  --xy-controls-button-border-color: theme('colors.border');
+  --xy-controls-button-color: theme('colors.foreground');
+  --xy-minimap-background-color: theme('colors.surface');
+  --xy-minimap-mask-background-color: rgba(0,0,0,0.4);
+}

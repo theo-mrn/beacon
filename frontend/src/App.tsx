@@ -7,6 +7,7 @@ import { Portals } from './pages/Portals'
 import { CVEs } from './pages/CVEs'
 import { Wazuh } from './pages/Wazuh'
 import { Reviews } from './pages/Reviews'
+import { Topology } from './pages/Topology'
 import { useEndpoints } from './hooks/useEndpoints'
 import { useWazuh } from './hooks/useWazuh'
 import { useCVEs } from './hooks/useCVEs'
@@ -66,6 +67,7 @@ export default function App() {
             {view === 'cves' && <CVEs initialSearch={searchQuery} initialNs={cveFilter?.ns} initialApp={cveFilter?.app} />}
             {view === 'wazuh' && <Wazuh stats={wazuh} loading={wzLoading} refresh={wzRefresh} />}
             {view === 'reviews' && <Reviews endpoints={endpoints} refresh={refresh} />}
+            {view === 'topology' && <Topology endpoints={endpoints} />}
           </>
         )}
       </main>

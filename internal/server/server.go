@@ -74,6 +74,7 @@ func (s *Server) Start(ctx context.Context, addr string) {
 	mux.HandleFunc("/api/review", s.handleReview)
 	mux.HandleFunc("/api/reviews", s.handleReviews)
 	mux.HandleFunc("/api/wazuh", s.handleWazuh)
+	mux.HandleFunc("/api/topology", s.handleTopology)
 
 	// Root redirect to React app
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -999,6 +1000,21 @@ func reviewBadgeHTML(status, key, comment string) string {
 		`<span class="beacon-tooltip"><button onclick="openReviewModal('%s','%s','%s')"
 		class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full border cursor-pointer %s">%s</button>%s</span>`,
 		safeKey, status, safeComment, cls, label, tooltipHTML)
+}
+
+type topologyResponse struct {
+	Controllers []watcher.IngressController `json:"controllers"`
+	Endpoints   []model.ExposedEndpoint     `json:"endpoints"`
+}
+
+func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
+	controllers := s.watcher.DetectIngressControllers(r.Context())
+	endpoints := s.watcher.Snapshot()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(topologyResponse{
+		Controllers: controllers,
+		Endpoints:   endpoints,
+	})
 }
 
 func reviewLabel(status string) (string, string) {

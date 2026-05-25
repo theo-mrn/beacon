@@ -1,11 +1,12 @@
-import { LayoutDashboard, Globe, Shield, CheckSquare, Radar, ExternalLink, Bug, Search } from 'lucide-react'
+import { LayoutDashboard, Globe, Shield, CheckSquare, Radar, ExternalLink, Bug, Search, Network } from 'lucide-react'
 import { clsx } from 'clsx'
 
-export type View = 'overview' | 'endpoints' | 'portals' | 'cves' | 'wazuh' | 'reviews'
+export type View = 'overview' | 'endpoints' | 'portals' | 'cves' | 'wazuh' | 'reviews' | 'topology'
 
 const nav = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'endpoints', label: 'Endpoints', icon: Globe },
+  { id: 'topology', label: 'Topology', icon: Network },
   { id: 'portals', label: 'Portails', icon: ExternalLink },
   { id: 'cves', label: 'CVEs', icon: Bug },
   { id: 'wazuh', label: 'Wazuh Alerts', icon: Shield },

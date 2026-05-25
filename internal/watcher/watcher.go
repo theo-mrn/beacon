@@ -641,6 +641,75 @@ func podStatus(pod *corev1.Pod) string {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
+// IngressController décrit un ingress controller détecté dans le cluster.
+type IngressController struct {
+	Name       string
+	Namespace  string
+	Kind       string
+	Controller string // valeur du champ spec.controller de l'IngressClass
+	PodName    string
+	Ready      bool
+}
+
+// DetectIngressControllers liste les ingress controllers via les objets IngressClass K8s,
+// puis trouve le pod correspondant via ses labels app.kubernetes.io/name ou app.
+func (w *KubeWatcher) DetectIngressControllers(ctx context.Context) []IngressController {
+	classes, err := w.client.NetworkingV1().IngressClasses().List(ctx, metav1.ListOptions{})
+	if err != nil || len(classes.Items) == 0 {
+		return nil
+	}
+
+	pods, err := w.client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil
+	}
+
+	var out []IngressController
+	for _, ic := range classes.Items {
+		// Extrait le nom du controller depuis spec.controller (ex: "traefik.io/ingress-controller" → "traefik")
+		controllerVal := ic.Spec.Controller
+		parts := strings.Split(controllerVal, "/")
+		kind := parts[len(parts)-1]
+		// Normalise "ingress-controller" → prend la partie avant le tiret si possible
+		if idx := strings.Index(kind, "-"); idx > 0 {
+			prefix := kind[:idx]
+			if prefix != "ingress" {
+				kind = prefix
+			}
+		}
+
+		// Cherche un pod qui correspond à ce controller
+		var matchPod *corev1.Pod
+		for i := range pods.Items {
+			pod := &pods.Items[i]
+			appName := strings.ToLower(pod.Labels["app.kubernetes.io/name"])
+			appLabel := strings.ToLower(pod.Labels["app"])
+			if strings.Contains(appName, kind) || strings.Contains(appLabel, kind) {
+				matchPod = pod
+				break
+			}
+		}
+
+		entry := IngressController{
+			Name:       ic.Name,
+			Kind:       kind,
+			Controller: controllerVal,
+		}
+		if matchPod != nil {
+			entry.Namespace = matchPod.Namespace
+			entry.PodName = matchPod.Name
+			for _, c := range matchPod.Status.ContainerStatuses {
+				if c.Ready {
+					entry.Ready = true
+					break
+				}
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 // ── VulnerabilityReports Trivy ───────────────────────────────────────────────
 
 func (w *KubeWatcher) watchVulnerabilityReports(ctx context.Context) {
