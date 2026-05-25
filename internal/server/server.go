@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
@@ -22,6 +23,9 @@ import (
 
 //go:embed templates/*.html
 var templateFS embed.FS
+
+//go:embed static
+var staticFS embed.FS
 
 type Server struct {
 	watcher   *watcher.KubeWatcher
@@ -48,15 +52,37 @@ func New(w *watcher.KubeWatcher, st *store.Store, wz *wazuh.Client) (*Server, er
 
 func (s *Server) Start(ctx context.Context, addr string) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleIndex)
+
+	// React SPA — served at /app/
+	sub, _ := fs.Sub(staticFS, "static")
+	staticHandler := http.FileServer(http.FS(sub))
+	mux.Handle("/app/", http.StripPrefix("/app", staticHandler))
+
+	// Legacy HTML routes
+	mux.HandleFunc("/old", s.handleIndex)
 	mux.HandleFunc("/cves", s.handleCVEPage)
 	mux.HandleFunc("/portal", s.handlePortal)
+
+	// SSE — both paths for compat
 	mux.HandleFunc("/stream", s.handleSSE)
+	mux.HandleFunc("/sse", s.handleSSE)
+
+	// APIs
 	mux.HandleFunc("/api/endpoints", s.handleAPI)
 	mux.HandleFunc("/api/cves", s.handleCVEs)
+	mux.HandleFunc("/api/portals", s.handlePortalsAPI)
 	mux.HandleFunc("/api/review", s.handleReview)
 	mux.HandleFunc("/api/reviews", s.handleReviews)
 	mux.HandleFunc("/api/wazuh", s.handleWazuh)
+
+	// Root redirect to React app
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/app/", http.StatusFound)
+			return
+		}
+		http.NotFound(w, r)
+	})
 
 	srv := &http.Server{Addr: addr, Handler: mux}
 	go func() { <-ctx.Done(); srv.Shutdown(context.Background()) }()
@@ -146,6 +172,38 @@ func (s *Server) handleCVEs(w http.ResponseWriter, r *http.Request) {
 		cves = []model.CVEDetail{}
 	}
 	json.NewEncoder(w).Encode(cves)
+}
+
+func (s *Server) handlePortalsAPI(w http.ResponseWriter, r *http.Request) {
+	type PortalEntry struct {
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+		Hostname  string `json:"hostname"`
+		URL       string `json:"url"`
+		TLS       bool   `json:"tls"`
+		Risk      string `json:"risk"`
+	}
+	eps := s.snapshot()
+	var out []PortalEntry
+	for _, ep := range eps {
+		isIngress := ep.SourceKind == model.ExposureIngress || ep.SourceKind == model.ExposureIngressRoute
+		if !isIngress && ep.Hostname == "" {
+			continue
+		}
+		if ep.Hostname != "" && !scorer.Default.IsPortalVisible(ep.Hostname) {
+			continue
+		}
+		out = append(out, PortalEntry{
+			Name:      ep.ObjectName,
+			Namespace: ep.Namespace,
+			Hostname:  epHost(ep),
+			URL:       epURL(ep),
+			TLS:       ep.TLS,
+			Risk:      string(ep.Risk),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
 }
 
 func (s *Server) handleWazuh(w http.ResponseWriter, r *http.Request) {
