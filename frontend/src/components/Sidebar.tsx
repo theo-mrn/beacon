@@ -20,7 +20,7 @@ interface Props {
   onSearch: () => void
 }
 
-export function Sidebar({ view, onChange, counts, onSearch }: Props) {
+export function Sidebar({ view, onChange, onSearch }: Props) {
   return (
     <aside className="fixed left-0 top-0 h-screen w-56 bg-sidebar border-r border-border flex flex-col z-20">
       {/* Logo */}

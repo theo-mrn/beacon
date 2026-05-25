@@ -21,7 +21,7 @@ export default function App() {
 
   const { endpoints, loading: epLoading, refresh } = useEndpoints()
   const { stats: wazuh, loading: wzLoading, refresh: wzRefresh } = useWazuh()
-  const { cves } = useCVEs()
+  useCVEs()
   const { portals } = usePortals()
 
   const counts = {

@@ -48,7 +48,7 @@ const TYPE_LABEL: Record<string, string> = {
   nav: 'Navigation',
 }
 
-type CVERow = { id: string; severity: string; title: string; primary_link: string }
+type CVERow = { id: string; severity: string; title: string; primary_link: string; package?: string }
 let _cveCache: CVERow[] | null = null
 let _cveFetch: Promise<CVERow[]> | null = null
 function getCVEs(): Promise<CVERow[]> {
