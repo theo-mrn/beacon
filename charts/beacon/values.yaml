@@ -1,6 +1,6 @@
 image:
   repository: ghcr.io/theo-mrn/beacon
-  tag: "sha-5cc3637"
+  tag: "sha-9322c1b"
   pullPolicy: IfNotPresent
 
 # Namespace où beacon sera déployé
