@@ -10,6 +10,9 @@ spec:
   routes:
     - kind: Rule
       match: Host(`{{ .Values.ingress.host }}`)
+      middlewares:
+        - name: authelia
+          namespace: authelia
       services:
         - name: beacon
           port: {{ .Values.service.port }}
