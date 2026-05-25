@@ -16,6 +16,7 @@ import (
 	"github.com/theo-mrn/beacon/internal/server"
 	"github.com/theo-mrn/beacon/internal/store"
 	"github.com/theo-mrn/beacon/internal/watcher"
+	"github.com/theo-mrn/beacon/internal/wazuh"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -102,7 +103,23 @@ func main() {
 	w := watcher.New(client, dynClient, notifier, st, trivyURL)
 	w.Start(ctx)
 
-	srv, err := server.New(w)
+	// Client Wazuh — URL configurable, fallback sur le service K8s interne
+	wazuhURL := os.Getenv("WAZUH_INDEXER_URL")
+	if wazuhURL == "" {
+		wazuhURL = "https://indexer.wazuh.svc.cluster.local:9200"
+	}
+	wazuhUser := os.Getenv("WAZUH_INDEXER_USER")
+	if wazuhUser == "" {
+		wazuhUser = "admin"
+	}
+	wazuhPass := os.Getenv("WAZUH_INDEXER_PASSWORD")
+	if wazuhPass == "" {
+		wazuhPass = "SecretPassword"
+	}
+	wazuhClient := wazuh.NewClient(wazuhURL, wazuhUser, wazuhPass)
+	wazuhClient.Start(ctx)
+
+	srv, err := server.New(w, st, wazuhClient)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "server: %v\n", err)
 		os.Exit(1)
@@ -112,6 +129,11 @@ func main() {
 	printBanner()
 	fmt.Printf("%sEn écoute... premier scan dans 3s (Ctrl+C pour quitter)%s\n", dim, reset)
 	time.Sleep(3 * time.Second)
+
+	// Digest quotidien
+	if notifier.Enabled() {
+		go runDigest(ctx, w, notifier)
+	}
 
 	// Premier affichage immédiat puis refresh à chaque update
 	render(w)
@@ -125,6 +147,39 @@ func main() {
 			// Debounce : attendre 500ms que les events se stabilisent
 			drain(w.Updates, 500*time.Millisecond)
 			render(w)
+		}
+	}
+}
+
+func runDigest(ctx context.Context, w *watcher.KubeWatcher, notifier *notify.Notifier) {
+	// Première notification dans 24h, puis toutes les 24h
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			eps := w.Snapshot()
+			newCount, modCount, highCount := 0, 0, 0
+			var topNew []model.ExposedEndpoint
+			for i := range eps {
+				sr := scorer.Default.ScoreWithReasons(&eps[i])
+				eps[i].Risk = sr.Level
+				eps[i].RiskReasons = sr.Reasons
+				if eps[i].Status == "NEW" {
+					newCount++
+				} else if eps[i].Status == "MODIFIED" {
+					modCount++
+				}
+				if eps[i].Risk == model.RiskHigh {
+					highCount++
+					if eps[i].Status == "NEW" {
+						topNew = append(topNew, eps[i])
+					}
+				}
+			}
+			notifier.NotifyDigest(newCount, modCount, highCount, topNew)
 		}
 	}
 }
@@ -145,7 +200,9 @@ func drain(ch <-chan struct{}, d time.Duration) {
 func render(w *watcher.KubeWatcher) {
 	endpoints := w.Snapshot()
 	for i := range endpoints {
-		endpoints[i].Risk = scorer.Score(&endpoints[i])
+		sr := scorer.Default.ScoreWithReasons(&endpoints[i])
+		endpoints[i].Risk = sr.Level
+		endpoints[i].RiskReasons = sr.Reasons
 	}
 
 	// Trier : HIGH en premier, puis par hostname/IP

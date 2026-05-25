@@ -40,6 +40,7 @@ var vulnerabilityReportGVR = schema.GroupVersionResource{
 type CVESummary struct {
 	Critical int
 	High     int
+	Details  []model.CVEDetail
 }
 
 type KubeWatcher struct {
@@ -109,14 +110,19 @@ func (w *KubeWatcher) track(key string, ep *model.ExposedEndpoint) {
 	ep.Status = string(status)
 }
 
-// maybeNotify envoie une alerte webhook si l'endpoint est HIGH et nouveau.
+// maybeNotify envoie une alerte webhook si l'endpoint est HIGH et nouveau ou modifié.
 func (w *KubeWatcher) maybeNotify(key string, ep *model.ExposedEndpoint) {
 	if w.notifier == nil || !w.notifier.Enabled() {
 		return
 	}
-	ep.Risk = scorer.Score(ep)
-	if ep.Risk == model.RiskHigh && !w.seen[key] {
-		w.seen[key] = true
+	sr := scorer.Default.ScoreWithReasons(ep)
+	ep.Risk = sr.Level
+	ep.RiskReasons = sr.Reasons
+	if ep.Risk != model.RiskHigh {
+		return
+	}
+	// Alerter sur NEW et MODIFIED, mais pas répéter pour KNOWN
+	if ep.Status == string(store.StatusNew) || ep.Status == string(store.StatusModified) {
 		w.notifier.NotifyHigh(*ep)
 	}
 }
@@ -143,6 +149,27 @@ func (w *KubeWatcher) startTrivyIfAvailable(ctx context.Context) {
 	w.watchVulnerabilityReports(ctx)
 }
 
+// CVEsForApp retourne les CVE details pour un ns/appName donné.
+func (w *KubeWatcher) CVEsForApp(ns, app string) []model.CVEDetail {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if s, ok := w.cves[ns+"/"+app]; ok {
+		return s.Details
+	}
+	return nil
+}
+
+// AllCVEDetails retourne toutes les CVEs à plat, triées par sévérité puis score.
+func (w *KubeWatcher) AllCVEDetails() []model.CVEDetail {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	var out []model.CVEDetail
+	for _, s := range w.cves {
+		out = append(out, s.Details...)
+	}
+	return out
+}
+
 func (w *KubeWatcher) TrivyAvailable() bool {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -162,8 +189,28 @@ func (w *KubeWatcher) enrichCVE(ep *model.ExposedEndpoint) {
 	if !w.trivyAvailable {
 		return
 	}
-	for _, pod := range ep.Pods {
-		key := ep.Namespace + "/" + pod.Name
+	seen := map[string]bool{}
+	// Cherche les CVEs via les services référencés (indexés par ns/appLabel)
+	for _, svc := range ep.Services {
+		key := svc.Namespace + "/" + svc.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if cve, ok := w.cves[key]; ok {
+			ep.CVECritical += cve.Critical
+			ep.CVEHigh += cve.High
+		}
+	}
+	// Fallback : cherche via les pods (leur label app = clé dans w.pods)
+	for key := range w.pods {
+		if !strings.HasPrefix(key, ep.Namespace+"/") {
+			continue
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		if cve, ok := w.cves[key]; ok {
 			ep.CVECritical += cve.Critical
 			ep.CVEHigh += cve.High
@@ -633,28 +680,77 @@ func (w *KubeWatcher) runVulnWatch(ctx context.Context) error {
 	}
 }
 
+// replicaSetHashRe matche le suffixe hash d'un ReplicaSet (ex: -8b5b5b56d)
+var replicaSetHashRe = regexp.MustCompile(`-[0-9a-f]{7,10}$`)
+
 func (w *KubeWatcher) handleVulnReport(t watch.EventType, obj *unstructured.Unstructured) {
 	ns := obj.GetNamespace()
+	labels := obj.GetLabels()
 
-	// Le nom du Pod est dans les labels du rapport
-	podName := obj.GetLabels()["trivy-operator.resource.name"]
-	if podName == "" {
+	rsName := labels["trivy-operator.resource.name"]
+	if rsName == "" {
 		return
 	}
-	key := ns + "/" + podName
+
+	// On stocke les CVEs sous deux clés :
+	// 1. ns/rsName (nom exact du ReplicaSet)
+	// 2. ns/appName (nom sans le hash, pour matcher les labels "app")
+	appName := replicaSetHashRe.ReplaceAllString(rsName, "")
 
 	if t == watch.Deleted {
-		delete(w.cves, key)
+		delete(w.cves, ns+"/"+rsName)
+		delete(w.cves, ns+"/"+appName)
 		return
 	}
 
 	critical, _ := nestedInt(obj.Object, "report", "summary", "criticalCount")
 	high, _ := nestedInt(obj.Object, "report", "summary", "highCount")
 
-	w.cves[key] = CVESummary{Critical: critical, High: high}
+	container := labels["trivy-operator.container.name"]
+
+	// Extraire le détail des vulnérabilités
+	var details []model.CVEDetail
+	vulns, _, _ := unstructured.NestedSlice(obj.Object, "report", "vulnerabilities")
+	for _, v := range vulns {
+		vm, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		sev, _ := vm["severity"].(string)
+		if sev != "CRITICAL" && sev != "HIGH" {
+			continue
+		}
+		score, _ := vm["score"].(float64)
+		details = append(details, model.CVEDetail{
+			ID:               getString(vm, "vulnerabilityID"),
+			Severity:         sev,
+			Score:            score,
+			Package:          getString(vm, "resource"),
+			InstalledVersion: getString(vm, "installedVersion"),
+			FixedVersion:     getString(vm, "fixedVersion"),
+			Title:            getString(vm, "title"),
+			PrimaryLink:      getString(vm, "primaryLink"),
+			PublishedDate:    getString(vm, "publishedDate"),
+			Namespace:        ns,
+			App:              appName,
+			Container:        container,
+		})
+	}
+
+	existing := w.cves[ns+"/"+appName]
+	w.cves[ns+"/"+appName] = CVESummary{
+		Critical: existing.Critical + critical,
+		High:     existing.High + high,
+		Details:  append(existing.Details, details...),
+	}
 }
 
 // nestedInt lit un int dans un objet unstructured (qui peut être int64 ou float64).
+func getString(m map[string]interface{}, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
 func nestedInt(obj map[string]interface{}, fields ...string) (int, bool) {
 	val, found, err := unstructured.NestedFieldNoCopy(obj, fields...)
 	if !found || err != nil {

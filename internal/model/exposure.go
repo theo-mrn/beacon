@@ -38,6 +38,22 @@ type PodInfo struct {
 	Status string // Running, Pending, CrashLoopBackOff…
 }
 
+// CVEDetail décrit une vulnérabilité individuelle issue d'un VulnerabilityReport Trivy.
+type CVEDetail struct {
+	ID               string  `json:"id"`
+	Severity         string  `json:"severity"`
+	Score            float64 `json:"score"`
+	Package          string  `json:"package"`
+	InstalledVersion string  `json:"installed_version"`
+	FixedVersion     string  `json:"fixed_version"`
+	Title            string  `json:"title"`
+	PrimaryLink      string  `json:"primary_link"`
+	PublishedDate    string  `json:"published_date"`
+	Namespace        string  `json:"namespace"`
+	App              string  `json:"app"`
+	Container        string  `json:"container"`
+}
+
 // ExposedEndpoint représente un FQDN ou une IP exposée avec sa chaîne complète.
 type ExposedEndpoint struct {
 	// Identification
@@ -56,7 +72,8 @@ type ExposedEndpoint struct {
 	Pods     []PodInfo
 
 	// Scoring
-	Risk       RiskLevel
+	Risk        RiskLevel
+	RiskReasons []string
 
 	// Tracking temporel
 	DetectedAt time.Time
@@ -67,4 +84,8 @@ type ExposedEndpoint struct {
 	CVECritical int
 	CVEHigh     int
 	TrivyURL    string // lien vers le dashboard Trivy
+
+	// Annotation manuelle (false positive / accepté / à corriger)
+	ReviewStatus  string // "ACCEPTED", "FALSE_POSITIVE", "TO_FIX", or ""
+	ReviewComment string
 }

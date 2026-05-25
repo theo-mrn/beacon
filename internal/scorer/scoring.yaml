@@ -48,6 +48,11 @@ webhooks:
   discord: ""  # https://discord.com/api/webhooks/xxx
   generic: ""  # n'importe quelle URL JSON POST
 
+# Préfixes de hostname à exclure du Portail (APIs, endpoints non visitables)
+portal_exclude:
+  - api.
+  - api-
+
 # Score par défaut selon le type d'exposition
 # (appliqué si aucun port sensible n'est détecté)
 exposure_defaults:
@@ -55,3 +60,12 @@ exposure_defaults:
   LoadBalancer: MEDIUM
   Ingress: LOW
   IngressRoute: LOW
+
+# Scoring CVE — seuils pour monter le niveau de risque
+cve_scoring:
+  critical_count_high: 1   # nb de CVE CRITICAL pour forcer HIGH
+  high_count_medium: 3     # nb de CVE HIGH pour forcer MEDIUM minimum
+  high_count_high: 10      # nb de CVE HIGH pour forcer HIGH
+
+# TLS — pénalité si absent sur un Ingress/IngressRoute
+no_tls_penalty: true       # true = monte d'un niveau si pas de TLS

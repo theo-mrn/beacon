@@ -15,6 +15,12 @@ CREATE TABLE IF NOT EXISTS endpoints (
 	fingerprint TEXT NOT NULL,
 	first_seen  DATETIME NOT NULL,
 	last_seen   DATETIME NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reviews (
+	key        TEXT PRIMARY KEY,
+	status     TEXT NOT NULL,
+	comment    TEXT NOT NULL DEFAULT '',
+	updated_at DATETIME NOT NULL
 );`
 
 // Status indique si un endpoint est nouveau, modifié, ou connu.
@@ -101,6 +107,73 @@ func Fingerprint(sourceKind, externalIP, hostname string, ports []int32) string 
 	}
 	b, _ := json.Marshal(data)
 	return string(b)
+}
+
+// ReviewStatus indique le statut manuel d'un endpoint.
+type ReviewStatus string
+
+const (
+	ReviewAccepted      ReviewStatus = "ACCEPTED"
+	ReviewFalsePositive ReviewStatus = "FALSE_POSITIVE"
+	ReviewToFix         ReviewStatus = "TO_FIX"
+)
+
+// Review est l'annotation manuelle d'un endpoint.
+type Review struct {
+	Key       string
+	Status    ReviewStatus
+	Comment   string
+	UpdatedAt time.Time
+}
+
+// SetReview crée ou met à jour l'annotation manuelle d'un endpoint.
+func (s *Store) SetReview(key string, status ReviewStatus, comment string) error {
+	now := time.Now().UTC()
+	_, err := s.db.Exec(
+		`INSERT INTO reviews (key, status, comment, updated_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(key) DO UPDATE SET status=excluded.status, comment=excluded.comment, updated_at=excluded.updated_at`,
+		key, string(status), comment, now,
+	)
+	return err
+}
+
+// DeleteReview supprime l'annotation manuelle d'un endpoint.
+func (s *Store) DeleteReview(key string) error {
+	_, err := s.db.Exec(`DELETE FROM reviews WHERE key = ?`, key)
+	return err
+}
+
+// GetReview retourne l'annotation manuelle d'un endpoint, ou nil si inexistante.
+func (s *Store) GetReview(key string) (*Review, error) {
+	var r Review
+	err := s.db.QueryRow(
+		`SELECT key, status, comment, updated_at FROM reviews WHERE key = ?`, key,
+	).Scan(&r.Key, &r.Status, &r.Comment, &r.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// GetAllReviews retourne toutes les annotations manuelles indexées par clé.
+func (s *Store) GetAllReviews() (map[string]Review, error) {
+	rows, err := s.db.Query(`SELECT key, status, comment, updated_at FROM reviews`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]Review)
+	for rows.Next() {
+		var r Review
+		if err := rows.Scan(&r.Key, &r.Status, &r.Comment, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out[r.Key] = r
+	}
+	return out, rows.Err()
 }
 
 // Cleanup supprime les entrées non vues depuis plus de `age`.

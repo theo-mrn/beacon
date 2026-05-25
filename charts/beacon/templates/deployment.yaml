@@ -53,6 +53,18 @@ spec:
             - name: WEBHOOK_GENERIC
               value: {{ .Values.webhooks.generic | quote }}
             {{- end }}
+            {{- if .Values.wazuh.indexerURL }}
+            - name: WAZUH_INDEXER_URL
+              value: {{ .Values.wazuh.indexerURL | quote }}
+            {{- end }}
+            {{- if .Values.wazuh.user }}
+            - name: WAZUH_INDEXER_USER
+              value: {{ .Values.wazuh.user | quote }}
+            {{- end }}
+            {{- if .Values.wazuh.password }}
+            - name: WAZUH_INDEXER_PASSWORD
+              value: {{ .Values.wazuh.password | quote }}
+            {{- end }}
           volumeMounts:
             - name: scoring-config
               mountPath: /etc/beacon

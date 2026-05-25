@@ -15,7 +15,9 @@ import (
 
 	"github.com/theo-mrn/beacon/internal/model"
 	"github.com/theo-mrn/beacon/internal/scorer"
+	"github.com/theo-mrn/beacon/internal/store"
 	"github.com/theo-mrn/beacon/internal/watcher"
+	"github.com/theo-mrn/beacon/internal/wazuh"
 )
 
 //go:embed templates/*.html
@@ -23,18 +25,22 @@ var templateFS embed.FS
 
 type Server struct {
 	watcher   *watcher.KubeWatcher
+	store     *store.Store
+	wazuh     *wazuh.Client
 	tmpl      *template.Template
 	clients   map[chan string]struct{}
 	clientsMu sync.Mutex
 }
 
-func New(w *watcher.KubeWatcher) (*Server, error) {
+func New(w *watcher.KubeWatcher, st *store.Store, wz *wazuh.Client) (*Server, error) {
 	tmpl, err := template.ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
 	return &Server{
 		watcher: w,
+		store:   st,
+		wazuh:   wz,
 		tmpl:    tmpl,
 		clients: make(map[chan string]struct{}),
 	}, nil
@@ -43,8 +49,14 @@ func New(w *watcher.KubeWatcher) (*Server, error) {
 func (s *Server) Start(ctx context.Context, addr string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/cves", s.handleCVEPage)
+	mux.HandleFunc("/portal", s.handlePortal)
 	mux.HandleFunc("/stream", s.handleSSE)
 	mux.HandleFunc("/api/endpoints", s.handleAPI)
+	mux.HandleFunc("/api/cves", s.handleCVEs)
+	mux.HandleFunc("/api/review", s.handleReview)
+	mux.HandleFunc("/api/reviews", s.handleReviews)
+	mux.HandleFunc("/api/wazuh", s.handleWazuh)
 
 	srv := &http.Server{Addr: addr, Handler: mux}
 	go func() { <-ctx.Done(); srv.Shutdown(context.Background()) }()
@@ -57,6 +69,10 @@ func (s *Server) Start(ctx context.Context, addr string) {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	eps := s.snapshot()
 	p := buildPayloadData(eps)
 
@@ -65,6 +81,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"HeaderStats": template.HTML(p.Header),
 		"TableRows":   template.HTML(p.Table),
 		"NsGroups":    template.HTML(p.Ns),
+		"PortalCards": template.HTML(p.Portal),
 	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(buf.Bytes())
@@ -116,6 +133,203 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(s.snapshot())
 }
 
+func (s *Server) handleCVEs(w http.ResponseWriter, r *http.Request) {
+	ns := r.URL.Query().Get("ns")
+	app := r.URL.Query().Get("app")
+	w.Header().Set("Content-Type", "application/json")
+	if ns == "" || app == "" {
+		json.NewEncoder(w).Encode(s.watcher.AllCVEDetails())
+		return
+	}
+	cves := s.watcher.CVEsForApp(ns, app)
+	if cves == nil {
+		cves = []model.CVEDetail{}
+	}
+	json.NewEncoder(w).Encode(cves)
+}
+
+func (s *Server) handleWazuh(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	stats := s.wazuh.Stats()
+
+	// Calcule les corrélations avec les endpoints exposés
+	eps := s.snapshot()
+	var infos []wazuh.EndpointInfo
+	for _, ep := range eps {
+		if ep.ExternalIP == "" {
+			continue
+		}
+		infos = append(infos, wazuh.EndpointInfo{
+			Namespace:  ep.Namespace,
+			Name:       ep.ObjectName,
+			URL:        epURL(ep),
+			Risk:       string(ep.Risk),
+			ExternalIP: ep.ExternalIP,
+		})
+	}
+	stats.Correlations = s.wazuh.Correlate(infos)
+	json.NewEncoder(w).Encode(stats)
+}
+
+func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		key := r.URL.Query().Get("key")
+		if key == "" {
+			http.Error(w, "missing key", http.StatusBadRequest)
+			return
+		}
+		if err := s.store.DeleteReview(key); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Key     string `json:"key"`
+		Status  string `json:"status"`
+		Comment string `json:"comment"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if req.Key == "" || req.Status == "" {
+		http.Error(w, "key and status required", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetReview(req.Key, store.ReviewStatus(req.Status), req.Comment); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleReviews(w http.ResponseWriter, r *http.Request) {
+	reviews, err := s.store.GetAllReviews()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(reviews)
+}
+
+func (s *Server) handleCVEPage(w http.ResponseWriter, r *http.Request) {
+	var buf bytes.Buffer
+	s.tmpl.ExecuteTemplate(&buf, "cves.html", nil)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(buf.Bytes())
+}
+
+func (s *Server) handlePortal(w http.ResponseWriter, r *http.Request) {
+	eps := s.snapshot()
+
+	// Sort alphabetically by URL for the portal
+	sort.Slice(eps, func(i, j int) bool {
+		return epKey(eps[i]) < epKey(eps[j])
+	})
+
+	nsCount := map[string]int{}
+	for _, ep := range eps {
+		nsCount[ep.Namespace]++
+	}
+	nsSorted := make([]string, 0, len(nsCount))
+	for ns := range nsCount {
+		nsSorted = append(nsSorted, ns)
+	}
+	sort.Strings(nsSorted)
+
+	var nsButtons strings.Builder
+	for _, ns := range nsSorted {
+		nsButtons.WriteString(fmt.Sprintf(
+			`<button onclick="filterNs('%s')" data-ns="%s"
+        class="ns-btn w-full text-left px-4 py-2 text-sm text-slate-600 hover:bg-slate-50 transition-colors flex items-center justify-between">
+        %s<span class="text-xs font-semibold text-slate-400">%d</span>
+      </button>`, ns, ns, ns, nsCount[ns]))
+	}
+
+	var cards strings.Builder
+	for _, ep := range eps {
+		cards.WriteString(renderPortalCard(ep))
+	}
+
+	var buf bytes.Buffer
+	s.tmpl.ExecuteTemplate(&buf, "portal.html", map[string]template.HTML{
+		"Total":     template.HTML(fmt.Sprintf("%d", len(eps))),
+		"NsButtons": template.HTML(nsButtons.String()),
+		"Cards":     template.HTML(cards.String()),
+	})
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(buf.Bytes())
+}
+
+func renderPortalCard(ep model.ExposedEndpoint) string {
+	url := epURL(ep)
+	_, riskBadge, riskText := riskClasses(ep.Risk)
+
+	scheme := "http"
+	if ep.TLS {
+		scheme = "https"
+	}
+
+	schemeTag := fmt.Sprintf(`<span class="text-xs font-mono font-semibold text-slate-400">%s</span>`, scheme)
+	if ep.TLS {
+		schemeTag = `<span class="text-xs font-mono font-semibold text-emerald-600">https</span>`
+	}
+
+	displayURL := url
+	if displayURL == "" {
+		displayURL = ep.ObjectName
+	}
+
+	// Favicon letter
+	letter := string([]rune(ep.ObjectName)[0:1])
+
+	searchData := strings.ToLower(ep.ObjectName + " " + ep.Namespace + " " + url + " " + string(ep.SourceKind))
+
+	inner := fmt.Sprintf(`
+    <div class="flex items-start gap-3 mb-3">
+      <div class="w-9 h-9 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center flex-shrink-0">
+        <span class="text-sm font-bold text-indigo-600 uppercase">%s</span>
+      </div>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-semibold text-slate-900 truncate">%s</p>
+        <p class="text-xs text-slate-400 mt-0.5">%s · %s</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-1.5 mb-3">
+      %s
+      <span class="text-xs text-slate-500 truncate font-mono">%s</span>
+    </div>
+    <div class="flex items-center justify-between">
+      <span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full %s">%s</span>
+      %s
+    </div>`,
+		letter,
+		ep.ObjectName,
+		ep.Namespace, ep.SourceKind,
+		schemeTag,
+		displayURL,
+		riskBadge, riskText,
+		cveBadgeHTML(ep),
+	)
+
+	if url != "" {
+		return fmt.Sprintf(`
+<a href="%s" target="_blank" rel="noopener"
+  class="service-card card-link block bg-white rounded-xl border border-slate-200 p-4 cursor-pointer"
+  data-ns="%s" data-search="%s">%s</a>`, url, ep.Namespace, searchData, inner)
+	}
+	return fmt.Sprintf(`
+<div class="service-card bg-white rounded-xl border border-slate-200 p-4 opacity-60"
+  data-ns="%s" data-search="%s">%s</div>`, ep.Namespace, searchData, inner)
+}
+
 // ── Broadcast ─────────────────────────────────────────────────────────────────
 
 func (s *Server) broadcastLoop(ctx context.Context) {
@@ -157,12 +371,13 @@ func drain(ch <-chan struct{}, d time.Duration) {
 // ── Payload ───────────────────────────────────────────────────────────────────
 
 type payloadData struct {
-	Header     string
-	Table      string
-	Ns         string
-	Namespaces []string
-	HighCount  int
-	Counts     map[string]int
+	Header      string
+	Table       string
+	Ns          string
+	Portal      string
+	Namespaces  []string
+	HighCount   int
+	Counts      map[string]int
 }
 
 func (s *Server) buildSSEPayload() string {
@@ -173,6 +388,7 @@ func (s *Server) buildSSEPayload() string {
 		"header":     p.Header,
 		"table":      p.Table,
 		"ns":         p.Ns,
+		"portal":     p.Portal,
 		"namespaces": p.Namespaces,
 		"high_count": p.HighCount,
 		"counts":     p.Counts,
@@ -209,6 +425,7 @@ func buildPayloadData(eps []model.ExposedEndpoint) payloadData {
 		Header:     renderHeaderStats(high, med, low),
 		Table:      renderTableRows(eps),
 		Ns:         renderNsGroups(eps, namespaces),
+		Portal:     renderPortalCards(eps),
 		Counts:     map[string]int{"HIGH": high, "MEDIUM": med, "LOW": low},
 		Namespaces: namespaces,
 		HighCount:  high,
@@ -217,8 +434,16 @@ func buildPayloadData(eps []model.ExposedEndpoint) payloadData {
 
 func (s *Server) snapshot() []model.ExposedEndpoint {
 	eps := s.watcher.Snapshot()
+	reviews, _ := s.store.GetAllReviews()
 	for i := range eps {
-		eps[i].Risk = scorer.Score(&eps[i])
+		sr := scorer.Default.ScoreWithReasons(&eps[i])
+		eps[i].Risk = sr.Level
+		eps[i].RiskReasons = sr.Reasons
+		key := endpointStoreKey(eps[i])
+		if rv, ok := reviews[key]; ok {
+			eps[i].ReviewStatus = string(rv.Status)
+			eps[i].ReviewComment = rv.Comment
+		}
 	}
 	sort.Slice(eps, func(i, j int) bool {
 		ri, rj := riskOrder(eps[i].Risk), riskOrder(eps[j].Risk)
@@ -228,6 +453,14 @@ func (s *Server) snapshot() []model.ExposedEndpoint {
 		return epKey(eps[i]) < epKey(eps[j])
 	})
 	return eps
+}
+
+func endpointStoreKey(ep model.ExposedEndpoint) string {
+	host := ep.Hostname
+	if host == "" {
+		host = ep.ExternalIP
+	}
+	return fmt.Sprintf("%s/%s/%s/%s", ep.Namespace, string(ep.SourceKind), ep.ObjectName, host)
 }
 
 // ── Renderers ─────────────────────────────────────────────────────────────────
@@ -305,19 +538,18 @@ func cveBadgeHTML(ep model.ExposedEndpoint) string {
 		}
 		label += fmt.Sprintf("%d HIGH", ep.CVEHigh)
 	}
-	if ep.TrivyURL != "" {
-		return fmt.Sprintf(
-			`<a href="%s" target="_blank" rel="noopener" title="Voir dans Trivy"
-        class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 border border-purple-200 hover:bg-purple-200 transition-colors cursor-pointer">
-        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
-        </svg>CVE %s ↗</a>`, ep.TrivyURL, label)
+	// Trouve le nom d'app depuis les services (premier service = app principale)
+	app := ep.ObjectName
+	if len(ep.Services) > 0 && ep.Services[0].Name != "" {
+		app = ep.Services[0].Name
 	}
 	return fmt.Sprintf(
-		`<span class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 border border-purple-200">
-        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
-        </svg>CVE %s</span>`, label)
+		`<button onclick="showCVEs('%s','%s','%s')" title="Voir les CVEs"
+		class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 border border-purple-200 hover:bg-purple-200 transition-colors cursor-pointer">
+		<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+		  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/>
+		</svg>CVE %s</button>`,
+		ep.Namespace, app, label, label)
 }
 
 func statusBadgeHTML(status string) string {
@@ -362,16 +594,58 @@ func renderTableRow(ep model.ExposedEndpoint) string {
 		podsHTML = fmt.Sprintf(`<span class="text-xs font-medium %s">%d / %d</span><span class="text-slate-400 text-xs ml-1">running</span>`, color, running, len(ep.Pods))
 	}
 
-	return fmt.Sprintf(`
-<tr class="tr-row border-b border-slate-100 last:border-0" data-risk="%s" data-ns="%s">
-  <td class="px-4 py-3">
+	key := endpointStoreKey(ep)
+	reviewHTML := reviewBadgeHTML(ep.ReviewStatus, key, ep.ReviewComment)
+
+	// Faux positif ou Accepté → on efface le badge de risque, ligne atténuée
+	dismissed := ep.ReviewStatus == "ACCEPTED" || ep.ReviewStatus == "FALSE_POSITIVE"
+
+	rowClass := ""
+	if dismissed {
+		rowClass = " opacity-40"
+	}
+
+	riskCell := ""
+	if dismissed {
+		// Pas de badge risque, juste le badge review
+		riskCell = reviewHTML
+	} else {
+		toFixExtra := ""
+		if ep.ReviewStatus == "TO_FIX" {
+			toFixExtra = `<div class="mt-0.5">` + reviewHTML + `</div>`
+		}
+		// Badge risque normal + tooltip raisons + badge status (NEW/MODIFIED)
+		riskCell = fmt.Sprintf(`
     <div class="flex flex-col gap-1">
-      <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-full %s">
-        <span class="w-1.5 h-1.5 rounded-full %s"></span>%s
+      <span class="beacon-tooltip inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-full %s">
+        <span class="w-1.5 h-1.5 rounded-full %s"></span>%s%s
       </span>
-      %s
-    </div>
-  </td>
+      %s%s
+    </div>`,
+			riskBadge, riskDot, riskText, reasonsTooltip(ep.RiskReasons),
+			statusBadgeHTML(ep.Status),
+			toFixExtra,
+		)
+	}
+
+	// Colonne review : si déjà dans riskCell (dismissed ou TO_FIX), juste le bouton crayon
+	reviewCol := reviewHTML
+	if dismissed || ep.ReviewStatus == "TO_FIX" {
+		// Déjà affiché dans riskCell, colonne review = bouton edit discret
+		safeKey := strings.ReplaceAll(endpointStoreKey(ep), "'", "\\'")
+		safeComment := strings.ReplaceAll(ep.ReviewComment, "'", "\\'")
+		safeComment = strings.ReplaceAll(safeComment, "\n", " ")
+		reviewCol = fmt.Sprintf(
+			`<button onclick="openReviewModal('%s','%s','%s')" title="Modifier"
+			class="text-slate-300 hover:text-slate-500 transition-colors cursor-pointer">
+			<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+			  <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125"/>
+			</svg></button>`, safeKey, ep.ReviewStatus, safeComment)
+	}
+
+	return fmt.Sprintf(`
+<tr class="tr-row border-b border-slate-100 last:border-0%s" data-risk="%s" data-ns="%s" data-review="%s">
+  <td class="px-4 py-3">%s</td>
   <td class="px-4 py-3 text-xs font-mono text-slate-600">%s</td>
   <td class="px-4 py-3">
     <span class="text-xs font-medium bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">%s</span>
@@ -379,15 +653,17 @@ func renderTableRow(ep model.ExposedEndpoint) string {
   <td class="px-4 py-3">%s</td>
   <td class="px-4 py-3"><div class="flex flex-wrap gap-1">%s</div></td>
   <td class="px-4 py-3">%s</td>
+  <td class="px-4 py-3">%s</td>
 </tr>`,
-		ep.Risk, ep.Namespace,
-		riskBadge, riskDot, riskText,
-		statusBadgeHTML(ep.Status),
+		rowClass,
+		ep.Risk, ep.Namespace, ep.ReviewStatus,
+		riskCell,
 		ep.SourceKind,
 		ep.Namespace,
 		urlHTML,
 		portsHTML,
 		podsHTML,
+		reviewCol,
 	)
 }
 
@@ -432,28 +708,25 @@ func renderNsGroups(eps []model.ExposedEndpoint, namespaces []string) string {
 		}
 
 		sb.WriteString(fmt.Sprintf(`
-<div data-nsgroup="%s" class="bg-white rounded-xl border border-slate-200 overflow-hidden">
-  <div class="flex items-center gap-3 px-4 py-3 border-b border-slate-100 bg-slate-50">
+<div data-nsgroup="%s" class="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+  <div class="flex items-center gap-3 px-5 py-3 bg-slate-50 border-b border-slate-200">
     %s
     <div class="flex items-center gap-1.5">%s</div>
-    <span class="ml-auto text-xs text-slate-400">%d endpoint%s</span>
+    <span class="ml-auto text-xs text-slate-400 font-medium">%d endpoint%s</span>
   </div>
-  <div class="divide-y divide-slate-100">%s</div>
+  <div>%s</div>
 </div>`, ns, nsBadge, summaryBadges, len(nsEps), pluralS(len(nsEps)), cardsHTML.String()))
 	}
 	return sb.String()
 }
 
 func renderNsCard(ep model.ExposedEndpoint) string {
-	riskDot, riskBadge, riskText := riskClasses(ep.Risk)
+	_, riskBadge, riskText := riskClasses(ep.Risk)
 	url := epURL(ep)
 
-	urlHTML := `<span class="text-slate-400 text-xs font-mono">—</span>`
+	urlHTML := `<span class="text-slate-400 text-xs">—</span>`
 	if url != "" {
-		urlHTML = fmt.Sprintf(
-			`<a href="%s" target="_blank" rel="noopener"
-        class="text-blue-600 hover:text-blue-800 hover:underline text-sm font-medium transition-colors cursor-pointer font-mono">%s</a>`,
-			url, url)
+		urlHTML = fmt.Sprintf(`<a href="%s" target="_blank" rel="noopener" class="text-indigo-600 hover:text-indigo-800 hover:underline font-mono text-sm font-medium">%s ↗</a>`, url, url)
 	}
 
 	// Services
@@ -462,14 +735,11 @@ func renderNsCard(ep model.ExposedEndpoint) string {
 		if svc.Name == "" {
 			continue
 		}
-		svcsHTML.WriteString(fmt.Sprintf(
-			`<span class="text-xs font-mono text-slate-500 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded">%s:%d</span> `,
-			svc.Name, svc.Port,
-		))
+		svcsHTML.WriteString(fmt.Sprintf(`<span class="text-xs font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">%s:%d</span>`, svc.Name, svc.Port))
 	}
 
 	// Pods
-	podsHTML := ""
+	podsStr := ""
 	if len(ep.Pods) > 0 {
 		running := 0
 		for _, p := range ep.Pods {
@@ -481,47 +751,103 @@ func renderNsCard(ep model.ExposedEndpoint) string {
 		if running < len(ep.Pods) {
 			col = "text-amber-600"
 		}
-		podsHTML = fmt.Sprintf(`<div class="flex items-center gap-1 mt-1">
-      <svg class="w-3 h-3 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9"/>
-      </svg>
-      <span class="text-xs %s font-medium">%d/%d pods running</span>
-    </div>`, col, running, len(ep.Pods))
+		podsStr = fmt.Sprintf(`<span class="text-xs font-medium %s">%d/%d pods</span>`, col, running, len(ep.Pods))
 	}
 
-	tlsTag := ""
+	tlsStr := ""
 	if ep.TLS {
-		tlsTag = `<span class="text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">TLS</span>`
+		tlsStr = `<span class="text-xs font-semibold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">TLS</span>`
 	}
+
+	cve := cveBadgeHTML(ep)
+	status := statusBadgeHTML(ep.Status)
 
 	return fmt.Sprintf(`
-<div class="px-4 py-3 hover:bg-slate-50 transition-colors" data-risk="%s">
-  <div class="flex items-start justify-between gap-4">
-    <div class="flex items-center gap-2.5 flex-wrap">
-      <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2 py-1 rounded-full %s">
-        <span class="w-1.5 h-1.5 rounded-full %s"></span>%s
-      </span>
-      <span class="text-xs font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">%s</span>
-      %s
-      %s
+<div class="px-5 py-4 hover:bg-slate-50/60 transition-colors border-b border-slate-100 last:border-0" data-risk="%s">
+  <div class="flex items-center justify-between gap-4">
+    <div class="flex items-center gap-2 flex-wrap min-w-0">
+      <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full %s">%s</span>
+      <span class="text-xs font-mono text-slate-400 bg-slate-100 px-2 py-0.5 rounded">%s</span>
+      %s%s%s
     </div>
-    <div class="flex-shrink-0">%s</div>
+    <div class="flex items-center gap-2 flex-shrink-0">%s%s</div>
   </div>
-  <div class="mt-2 pl-1">%s</div>
-  <div class="mt-1.5 pl-1 flex flex-wrap gap-1">%s</div>
-  %s
+  <div class="mt-2 flex items-center gap-3 flex-wrap">
+    %s
+    <div class="flex gap-1 flex-wrap">%s</div>
+  </div>
 </div>`,
 		ep.Risk,
-		riskBadge, riskDot, riskText,
+		riskBadge, riskText,
 		ep.SourceKind,
-		tlsTag,
-		statusBadgeHTML(ep.Status),
-		cveBadgeHTML(ep),
-		urlHTML,
+		tlsStr, status, cve,
+		urlHTML, podsStr,
 		renderPortTags(ep.Ports),
 		svcsHTML.String(),
-		podsHTML,
 	)
+}
+
+func renderPortalCards(eps []model.ExposedEndpoint) string {
+	// Sort alphabetically
+	sorted := make([]model.ExposedEndpoint, len(eps))
+	copy(sorted, eps)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].ObjectName < sorted[j].ObjectName
+	})
+	var sb strings.Builder
+	for _, ep := range sorted {
+		// Portail : Ingress/IngressRoute (toujours web) OU endpoint avec hostname
+		isIngress := ep.SourceKind == model.ExposureIngress || ep.SourceKind == model.ExposureIngressRoute
+		if !isIngress && ep.Hostname == "" {
+			continue
+		}
+		if ep.Hostname != "" && !scorer.Default.IsPortalVisible(ep.Hostname) {
+			continue
+		}
+		url := epURL(ep)
+		host := epHost(ep)
+		title := ep.Hostname
+		if title == "" {
+			title = ep.ObjectName
+		} else if i := strings.Index(title, "."); i > 0 {
+			title = title[:i]
+		}
+		letter := strings.ToUpper(string([]rune(title)[0:1]))
+		tlsClass := "text-slate-400"
+		scheme := "http"
+		if ep.TLS {
+			scheme = "https"
+			tlsClass = "text-emerald-500"
+		}
+		search := strings.ToLower(title + " " + host + " " + ep.Namespace + " " + ep.ObjectName)
+		sb.WriteString(fmt.Sprintf(`
+<a href="%s" target="_blank" rel="noopener"
+  class="portal-card block bg-white rounded-xl border border-slate-200 p-4 hover:shadow-md hover:-translate-y-px transition-all duration-150 cursor-pointer"
+  data-ns="%s" data-search="%s">
+  <div class="flex items-start gap-3 mb-3">
+    <div class="w-9 h-9 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center flex-shrink-0">
+      <span class="text-sm font-bold text-indigo-600">%s</span>
+    </div>
+    <div class="flex-1 min-w-0">
+      <p class="text-sm font-semibold text-slate-900 truncate">%s</p>
+      <p class="text-xs text-slate-400 mt-0.5">%s</p>
+    </div>
+  </div>
+  <p class="text-xs font-mono truncate"><span class="font-semibold %s">%s://</span><span class="text-slate-500">%s</span></p>
+</a>`, url, ep.Namespace, search, letter, title, ep.Namespace, tlsClass, scheme, host))
+	}
+	return sb.String()
+}
+
+
+func epHost(ep model.ExposedEndpoint) string {
+	if ep.Hostname != "" {
+		return ep.Hostname
+	}
+	if ep.ExternalIP != "" && len(ep.Ports) > 0 {
+		return fmt.Sprintf("%s:%d", ep.ExternalIP, ep.Ports[0].Port)
+	}
+	return ""
 }
 
 func renderPortTags(ports []model.ExposedPort) string {
@@ -592,6 +918,53 @@ func epKey(ep model.ExposedEndpoint) string {
 		return ep.Hostname
 	}
 	return ep.ExternalIP
+}
+
+func reviewBadgeHTML(status, key, comment string) string {
+	safeKey := strings.ReplaceAll(key, "'", "\\'")
+	safeComment := strings.ReplaceAll(comment, "'", "\\'")
+	safeComment = strings.ReplaceAll(safeComment, "\n", " ")
+	if status == "" {
+		return fmt.Sprintf(
+			`<button onclick="openReviewModal('%s','','%s')" title="Annoter"
+			class="text-slate-300 hover:text-slate-500 transition-colors cursor-pointer">
+			<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+			  <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125"/>
+			</svg></button>`, safeKey, safeComment)
+	}
+	label, cls := reviewLabel(status)
+	tooltipHTML := ""
+	if comment != "" {
+		tooltipHTML = fmt.Sprintf(`<span class="tt">%s</span>`, comment)
+	}
+	return fmt.Sprintf(
+		`<span class="beacon-tooltip"><button onclick="openReviewModal('%s','%s','%s')"
+		class="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full border cursor-pointer %s">%s</button>%s</span>`,
+		safeKey, status, safeComment, cls, label, tooltipHTML)
+}
+
+func reviewLabel(status string) (string, string) {
+	switch status {
+	case "ACCEPTED":
+		return "✓ Accepté", "bg-emerald-50 text-emerald-700 border-emerald-200"
+	case "FALSE_POSITIVE":
+		return "↩ Faux positif", "bg-blue-50 text-blue-700 border-blue-200"
+	case "TO_FIX":
+		return "⚠ À corriger", "bg-orange-50 text-orange-700 border-orange-200"
+	default:
+		return status, "bg-slate-100 text-slate-600 border-slate-200"
+	}
+}
+
+func reasonsTooltip(reasons []string) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	var lines string
+	for _, r := range reasons {
+		lines += `<div>⚠ ` + r + `</div>`
+	}
+	return fmt.Sprintf(`<span class="tt" style="white-space:normal;min-width:180px;text-align:left">%s</span>`, lines)
 }
 
 func pluralS(n int) string {

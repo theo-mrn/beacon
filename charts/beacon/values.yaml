@@ -45,3 +45,10 @@ webhooks:
   teams: ""
   discord: ""
   generic: ""
+
+# Intégration Wazuh (optionnel)
+# Connecte beacon à ton indexer Wazuh/OpenSearch pour afficher les alertes de sécurité
+wazuh:
+  indexerURL: "https://indexer.wazuh.svc.cluster.local:9200"
+  user: "admin"
+  password: ""   # à renseigner ou via secret
