@@ -1,3 +1,4 @@
 beacon.db
-beacon
 beacon-test.db
+# Compiled binary — ignore only the root-level binary, not subdirs
+/beacon
