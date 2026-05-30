@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react'
-import type { WazuhStats } from '../lib/types'
+import type { FalcoStats } from '../lib/types'
 
-export function useWazuh() {
-  const [stats, setStats] = useState<WazuhStats | null>(null)
+export function useFalco() {
+  const [stats, setStats] = useState<FalcoStats | null>(null)
   const [loading, setLoading] = useState(true)
 
   const fetch = async () => {
     try {
-      const r = await window.fetch('/api/wazuh')
+      const r = await window.fetch('/api/falco')
       const data = await r.json()
       setStats(data)
     } catch {
@@ -19,7 +19,7 @@ export function useWazuh() {
 
   useEffect(() => {
     fetch()
-    const id = setInterval(fetch, 30_000)
+    const id = setInterval(fetch, 60_000)
     return () => clearInterval(id)
   }, [])
 

@@ -13,6 +13,7 @@ type Decision struct {
 	Scope     string    `json:"scope"`   // Ip, Range
 	Duration  string    `json:"duration"`
 	Simulated bool      `json:"simulated"`
+	Country   string    `json:"country"`
 }
 
 // Alert représente une alerte CrowdSec.
@@ -59,13 +60,15 @@ type Correlation struct {
 
 // Stats agrège toutes les données CrowdSec.
 type Stats struct {
-	ActiveDecisions  int             `json:"active_decisions"`
-	AlertsLast24h    int             `json:"alerts_last_24h"`
-	TopSrcIPs        []SrcIPCount    `json:"top_src_ips"`
-	TopScenarios     []ScenarioCount `json:"top_scenarios"`
-	RecentAlerts     []Alert         `json:"recent_alerts"`
-	RecentDecisions  []Decision      `json:"recent_decisions"`
-	Correlations     []Correlation   `json:"correlations"`
+	ActiveDecisions     int             `json:"active_decisions"`       // total
+	LocalDecisions      int             `json:"local_decisions"`        // origin: crowdsec (détectés localement)
+	CommunityDecisions  int             `json:"community_decisions"`    // origin: CAPI (threat intel communautaire)
+	AlertsLast24h       int             `json:"alerts_last_24h"`
+	TopSrcIPs           []SrcIPCount    `json:"top_src_ips"`
+	TopScenarios        []ScenarioCount `json:"top_scenarios"`
+	RecentAlerts        []Alert         `json:"recent_alerts"`
+	RecentDecisions     []Decision      `json:"recent_decisions"`       // local seulement
+	Correlations        []Correlation   `json:"correlations"`
 }
 
 // EndpointInfo est passé par le server pour la corrélation.

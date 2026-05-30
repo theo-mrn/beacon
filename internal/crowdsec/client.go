@@ -160,6 +160,19 @@ func (c *Client) poll(ctx context.Context) {
 		fmt.Printf("[crowdsec] alerts error: %v\n", err)
 	}
 
+	// Enrichissement géo depuis les alertes CrowdSec (déjà géolocalisées par crowdsec)
+	geoFromAlerts := map[string]string{}
+	for _, a := range alerts {
+		if a.SourceIP != "" && a.Country != "" {
+			geoFromAlerts[a.SourceIP] = a.Country
+		}
+	}
+	for i := range decisions {
+		if country, ok := geoFromAlerts[decisions[i].Value]; ok {
+			decisions[i].Country = country
+		}
+	}
+
 	stats := buildStats(decisions, alerts)
 	c.mu.Lock()
 	c.stats = stats
@@ -256,8 +269,19 @@ func buildStats(decisions []Decision, alerts []Alert) Stats {
 		AlertsLast24h:   len(alerts),
 	}
 
-	// Top 10 décisions récentes
-	st.RecentDecisions = decisions
+	// Séparation local vs communautaire
+	var localDecisions []Decision
+	for _, d := range decisions {
+		if d.Origin == "crowdsec" || d.Origin == "cscli" {
+			st.LocalDecisions++
+			localDecisions = append(localDecisions, d)
+		} else {
+			st.CommunityDecisions++
+		}
+	}
+
+	// Décisions récentes = local seulement
+	st.RecentDecisions = localDecisions
 	if len(st.RecentDecisions) > 20 {
 		st.RecentDecisions = st.RecentDecisions[:20]
 	}

@@ -1,12 +1,12 @@
 import { MetricCard } from '../components/MetricCard'
 import { RiskBadge } from '../components/RiskBadge'
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
-import type { ExposedEndpoint, WazuhStats } from '../lib/types'
+import type { ExposedEndpoint } from '../lib/types'
 
 interface Props {
   endpoints: ExposedEndpoint[]
-  wazuh: WazuhStats | null
-  onNavigate: (v: 'endpoints' | 'wazuh') => void
+  wazuh: null
+  onNavigate: (v: 'endpoints' | 'crowdsec') => void
 }
 
 const CustomTooltip = ({ active, payload, label }: any) => {
@@ -21,7 +21,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   )
 }
 
-export function Overview({ endpoints, wazuh, onNavigate }: Props) {
+export function Overview({ endpoints, onNavigate }: Props) {
   const high = endpoints.filter(e => e.risk === 'HIGH').length
   const medium = endpoints.filter(e => e.risk === 'MEDIUM').length
   const low = endpoints.filter(e => e.risk === 'LOW').length
@@ -109,11 +109,10 @@ export function Overview({ endpoints, wazuh, onNavigate }: Props) {
         </div>
       </div>
 
-      {/* Second bento row — Wazuh + top risk */}
-      <div className={wazuh ? 'grid grid-cols-3 gap-4' : 'grid grid-cols-1 gap-4'}>
-        {/* Top HIGH endpoints */}
+      {/* Second bento row — Top HIGH endpoints */}
+      <div className="grid grid-cols-1 gap-4">
         {topRisk.length > 0 && (
-          <div className={`card ${wazuh ? 'col-span-2' : ''} p-0 overflow-hidden`}>
+          <div className="card p-0 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-4 border-b border-border">
               <div>
                 <div className="text-sm font-semibold">High Risk Endpoints</div>
@@ -141,56 +140,6 @@ export function Overview({ endpoints, wazuh, onNavigate }: Props) {
                 ))}
               </tbody>
             </table>
-          </div>
-        )}
-
-        {/* Wazuh summary */}
-        {wazuh && (
-          <div className="card space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-semibold">Wazuh</div>
-                <div className="text-xs text-foreground-muted">Dernières 24h</div>
-              </div>
-              <button onClick={() => onNavigate('wazuh')} className="btn-ghost text-xs">Détails</button>
-            </div>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-foreground-muted">Total alertes</span>
-                <span className="text-sm font-bold tabular-nums">{wazuh.total}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-foreground-muted">Critical (≥12)</span>
-                <span className="text-sm font-bold text-danger tabular-nums">{wazuh.critical}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-foreground-muted">High (≥7)</span>
-                <span className="text-sm font-bold text-warning tabular-nums">{wazuh.high}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-foreground-muted">Nœuds sous attaque</span>
-                <span className="text-sm font-bold tabular-nums">{wazuh.correlations?.length ?? 0}</span>
-              </div>
-            </div>
-            {wazuh.top_src_ips?.length > 0 && (
-              <div className="pt-3 border-t border-border space-y-2">
-                <div className="text-xs text-foreground-muted font-medium">Top attaquants</div>
-                {wazuh.top_src_ips.slice(0, 3).map((ip, i) => {
-                  const pct = Math.round((ip.count / (wazuh.top_src_ips[0]?.count || 1)) * 100)
-                  return (
-                    <div key={i} className="space-y-0.5">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-mono text-foreground">{ip.ip}</span>
-                        <span className="text-danger font-semibold">{ip.count}</span>
-                      </div>
-                      <div className="h-1 bg-surface-2 rounded-full overflow-hidden">
-                        <div className="h-full bg-danger/60 rounded-full" style={{ width: `${pct}%` }} />
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
           </div>
         )}
       </div>

@@ -38,20 +38,18 @@ export interface ExposedEndpoint {
   review_comment: string
 }
 
+// ── CrowdSec ──────────────────────────────────────────────────────────────────
+
 export interface SrcIPCount {
   ip: string
   country: string
   count: number
+  scenario: string
 }
 
-export interface AgentSummary {
-  agent_id: string
-  agent_name: string
-  agent_ip: string
-  total: number
-  critical: number
-  high: number
-  top_src_ips: SrcIPCount[]
+export interface ScenarioCount {
+  scenario: string
+  count: number
 }
 
 export interface EndpointRef {
@@ -61,35 +59,102 @@ export interface EndpointRef {
   risk: RiskLevel
 }
 
-export interface Correlation {
+export interface CrowdSecCorrelation {
   node_ip: string
   node_name: string
-  alert_count: number
+  decision_count: number
   top_src_ips: SrcIPCount[]
   endpoints: EndpointRef[]
 }
 
-export interface WazuhAlert {
-  id: string
-  timestamp: string
-  agent_id: string
-  agent_name: string
-  agent_ip: string
-  rule_id: string
-  rule_level: number
-  rule_desc: string
-  src_ip: string
-  country: string
-  mitre_tactics: string[]
-  mitre_techniques: string[]
+export interface CrowdSecDecision {
+  id: number
+  value: string
+  type: string
+  scenario: string
+  origin: string
+  scope: string
+  duration: string
 }
 
-export interface WazuhStats {
-  total: number
-  critical: number
-  high: number
-  agents: AgentSummary[]
+export interface CrowdSecAlert {
+  id: number
+  created_at: string
+  scenario: string
+  source_ip: string
+  country: string
+  events_count: number
+}
+
+export interface CrowdSecStats {
+  active_decisions: number
+  local_decisions: number
+  community_decisions: number
+  alerts_last_24h: number
   top_src_ips: SrcIPCount[]
-  recent_alerts: WazuhAlert[]
-  correlations: Correlation[]
+  top_scenarios: ScenarioCount[]
+  recent_alerts: CrowdSecAlert[]
+  recent_decisions: CrowdSecDecision[]
+  correlations: CrowdSecCorrelation[]
+}
+
+// ── Falco ─────────────────────────────────────────────────────────────────────
+
+export interface FalcoEvent {
+  timestamp: string
+  priority: string
+  rule: string
+  hostname: string
+  source: string
+  output: string
+  tags: string[]
+}
+
+export interface FalcoRuleCount {
+  rule: string
+  count: number
+  priority: string
+}
+
+export interface FalcoPriorityCount {
+  priority: string
+  count: number
+}
+
+export interface FalcoNodeStat {
+  hostname: string
+  event_count: number
+  top_rules: string[]
+  namespaces: string[]
+}
+
+export interface FalcoStats {
+  total_events: number
+  critical: number
+  warning: number
+  top_rules: FalcoRuleCount[]
+  by_priority: FalcoPriorityCount[]
+  recent_events: FalcoEvent[]
+  node_stats: FalcoNodeStat[]
+}
+
+// ── Lynis ─────────────────────────────────────────────────────────────────────
+
+export interface LynisNodeResult {
+  hostname: string
+  scanned_at: string
+  hardening_index: number
+  warnings: string[]
+  suggestions: string[]
+  tests: {
+    performed: number
+    passed: number
+    failed: number
+    warnings: number
+  }
+}
+
+export interface LynisStats {
+  nodes: LynisNodeResult[]
+  last_updated: string
 }

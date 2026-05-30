@@ -1,16 +1,18 @@
-import { LayoutDashboard, Globe, Shield, CheckSquare, Radar, ExternalLink, Bug, Search, Network } from 'lucide-react'
+import { LayoutDashboard, Globe, Shield, CheckSquare, Radar, ExternalLink, Bug, Search, Network, Zap, ShieldCheck } from 'lucide-react'
 import { clsx } from 'clsx'
 
-export type View = 'overview' | 'endpoints' | 'portals' | 'cves' | 'wazuh' | 'reviews' | 'topology'
+export type View = 'overview' | 'endpoints' | 'portals' | 'cves' | 'crowdsec' | 'falco' | 'lynis' | 'reviews' | 'topology'
 
 const nav = [
-  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-  { id: 'endpoints', label: 'Endpoints', icon: Globe },
-  { id: 'topology', label: 'Topology', icon: Network },
-  { id: 'portals', label: 'Portails', icon: ExternalLink },
-  { id: 'cves', label: 'CVEs', icon: Bug },
-  { id: 'wazuh', label: 'Wazuh Alerts', icon: Shield },
-  { id: 'reviews', label: 'Reviews', icon: CheckSquare },
+  { id: 'overview',  label: 'Overview',   icon: LayoutDashboard },
+  { id: 'endpoints', label: 'Endpoints',  icon: Globe },
+  { id: 'topology',  label: 'Topology',   icon: Network },
+  { id: 'portals',   label: 'Portails',   icon: ExternalLink },
+  { id: 'cves',      label: 'CVEs',       icon: Bug },
+  { id: 'crowdsec',  label: 'CrowdSec',   icon: Shield },
+  { id: 'falco',     label: 'Falco',      icon: Zap },
+  { id: 'lynis',     label: 'Lynis',      icon: ShieldCheck },
+  { id: 'reviews',   label: 'Reviews',    icon: CheckSquare },
 ] as const
 
 interface Props {
@@ -62,7 +64,6 @@ export function Sidebar({ view, onChange, onSearch }: Props) {
           </button>
         ))}
       </nav>
-
     </aside>
   )
 }
