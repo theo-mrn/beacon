@@ -10,13 +10,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/theo-mrn/beacon/internal/crowdsec"
+	"github.com/theo-mrn/beacon/internal/falco"
+	"github.com/theo-mrn/beacon/internal/lynis"
 	"github.com/theo-mrn/beacon/internal/model"
 	"github.com/theo-mrn/beacon/internal/notify"
 	"github.com/theo-mrn/beacon/internal/scorer"
 	"github.com/theo-mrn/beacon/internal/server"
 	"github.com/theo-mrn/beacon/internal/store"
 	"github.com/theo-mrn/beacon/internal/watcher"
-	"github.com/theo-mrn/beacon/internal/wazuh"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -35,12 +37,10 @@ const (
 )
 
 func buildConfig() (*rest.Config, error) {
-	// In-cluster d'abord (quand on tourne comme Pod)
 	if cfg, err := rest.InClusterConfig(); err == nil {
 		fmt.Println("mode: in-cluster")
 		return cfg, nil
 	}
-	// Fallback local
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
 		home, _ := os.UserHomeDir()
@@ -71,7 +71,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Notifier webhook — actif seulement si configuré dans scoring.yaml
+	// Notifier webhook
 	wh := scorer.Default.Webhooks()
 	notifier := notify.New(notify.WebhookConfig{
 		Slack:   wh.Slack,
@@ -89,7 +89,6 @@ func main() {
 	}
 	st, err := store.Open(dbPath)
 	if err != nil {
-		// En local sans /var/lib/beacon, fallback sur un fichier temporaire
 		st, err = store.Open("beacon.db")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "store: %v\n", err)
@@ -103,23 +102,19 @@ func main() {
 	w := watcher.New(client, dynClient, notifier, st, trivyURL)
 	w.Start(ctx)
 
-	// Client Wazuh — URL configurable, fallback sur le service K8s interne
-	wazuhURL := os.Getenv("WAZUH_INDEXER_URL")
-	if wazuhURL == "" {
-		wazuhURL = "https://indexer.wazuh.svc.cluster.local:9200"
-	}
-	wazuhUser := os.Getenv("WAZUH_INDEXER_USER")
-	if wazuhUser == "" {
-		wazuhUser = "admin"
-	}
-	wazuhPass := os.Getenv("WAZUH_INDEXER_PASSWORD")
-	if wazuhPass == "" {
-		wazuhPass = "SecretPassword"
-	}
-	wazuhClient := wazuh.NewClient(wazuhURL, wazuhUser, wazuhPass)
-	wazuhClient.Start(ctx)
+	// CrowdSec — IPS + décisions actives
+	csClient := crowdsec.NewClientFromEnv()
+	csClient.Start(ctx)
 
-	srv, err := server.New(w, st, wazuhClient)
+	// Falco — events runtime depuis Loki
+	falcoClient := falco.NewClientFromEnv()
+	falcoClient.Start(ctx)
+
+	// Lynis — score hardening des nodes
+	lynisClient := lynis.NewClientFromEnv()
+	lynisClient.Start(ctx)
+
+	srv, err := server.New(w, st, csClient, falcoClient, lynisClient)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "server: %v\n", err)
 		os.Exit(1)
@@ -130,12 +125,10 @@ func main() {
 	fmt.Printf("%sEn écoute... premier scan dans 3s (Ctrl+C pour quitter)%s\n", dim, reset)
 	time.Sleep(3 * time.Second)
 
-	// Digest quotidien
 	if notifier.Enabled() {
 		go runDigest(ctx, w, notifier)
 	}
 
-	// Premier affichage immédiat puis refresh à chaque update
 	render(w)
 
 	for {
@@ -144,7 +137,6 @@ func main() {
 			fmt.Println("\nArrêt de beacon.")
 			return
 		case <-w.Updates:
-			// Debounce : attendre 500ms que les events se stabilisent
 			drain(w.Updates, 500*time.Millisecond)
 			render(w)
 		}
@@ -152,7 +144,6 @@ func main() {
 }
 
 func runDigest(ctx context.Context, w *watcher.KubeWatcher, notifier *notify.Notifier) {
-	// Première notification dans 24h, puis toutes les 24h
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
 	for {
@@ -205,7 +196,6 @@ func render(w *watcher.KubeWatcher) {
 		endpoints[i].RiskReasons = sr.Reasons
 	}
 
-	// Trier : HIGH en premier, puis par hostname/IP
 	sort.Slice(endpoints, func(i, j int) bool {
 		ri, rj := riskOrder(endpoints[i].Risk), riskOrder(endpoints[j].Risk)
 		if ri != rj {
@@ -214,7 +204,7 @@ func render(w *watcher.KubeWatcher) {
 		return endpointKey(endpoints[i]) < endpointKey(endpoints[j])
 	})
 
-	fmt.Print("\033[H\033[2J") // clear screen
+	fmt.Print("\033[H\033[2J")
 	printBanner()
 	fmt.Printf("%s  %d endpoints exposés  —  %s%s\n\n",
 		dim, len(endpoints), time.Now().Format("15:04:05"), reset)
@@ -232,7 +222,6 @@ func render(w *watcher.KubeWatcher) {
 func printEndpoint(ep model.ExposedEndpoint) {
 	rc, icon := riskStyle(ep.Risk)
 
-	// ── Ligne principale ─────────────────────────────────────────────────────
 	dest := ep.Hostname
 	if dest == "" {
 		dest = ep.ExternalIP
@@ -274,23 +263,15 @@ func printEndpoint(ep model.ExposedEndpoint) {
 		bold, url, statusTag, reset,
 	)
 
-	// ── Ports ────────────────────────────────────────────────────────────────
 	fmt.Printf("  %s│%s  ports: %s\n", dim, reset, portStr)
 
-	// ── Services ciblés ──────────────────────────────────────────────────────
 	if len(ep.Services) > 0 {
-		for si, sref := range ep.Services {
-			prefix := "├─"
-			if si == len(ep.Services)-1 && len(ep.Pods) == 0 {
-				prefix = "└─"
-			}
+		for _, sref := range ep.Services {
 			fmt.Printf("  %s│%s  %s Service: %s/%s:%d%s\n",
 				dim, reset, dim, sref.Namespace, sref.Name, sref.Port, reset)
-			_ = prefix
 		}
 	}
 
-	// ── Pods ─────────────────────────────────────────────────────────────────
 	if len(ep.Pods) > 0 {
 		fmt.Printf("  %s│%s  Pods (%d):\n", dim, reset, len(ep.Pods))
 		for _, pod := range ep.Pods {
@@ -306,7 +287,6 @@ func printEndpoint(ep model.ExposedEndpoint) {
 		}
 	}
 
-	// ── CVE Trivy ─────────────────────────────────────────────────────────────
 	if ep.CVECritical > 0 || ep.CVEHigh > 0 {
 		cveStr := ""
 		if ep.CVECritical > 0 {
@@ -375,7 +355,7 @@ func endpointKey(ep model.ExposedEndpoint) string {
 func printBanner() {
 	fmt.Printf("%s%s", bold, cyan)
 	fmt.Println("╔══════════════════════════════════════════════════════╗")
-	fmt.Println("║          BEACON — KubeSurfaceScanner v0.1            ║")
+	fmt.Println("║          BEACON — KubeSurfaceScanner v2              ║")
 	fmt.Println("╚══════════════════════════════════════════════════════╝")
 	fmt.Printf("%s", reset)
 }

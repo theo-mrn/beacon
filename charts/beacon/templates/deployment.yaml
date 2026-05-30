@@ -17,7 +17,6 @@ spec:
       labels:
         app: beacon
       annotations:
-        # Force un redéploiement si le scoring.yaml change
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       serviceAccountName: beacon
@@ -55,18 +54,16 @@ spec:
             - name: WEBHOOK_GENERIC
               value: {{ .Values.webhooks.generic | quote }}
             {{- end }}
-            {{- if .Values.wazuh.indexerURL }}
-            - name: WAZUH_INDEXER_URL
-              value: {{ .Values.wazuh.indexerURL | quote }}
+            # CrowdSec
+            - name: CROWDSEC_LAPI_URL
+              value: {{ .Values.crowdsec.lapiURL | quote }}
+            {{- if .Values.crowdsec.apiKey }}
+            - name: CROWDSEC_API_KEY
+              value: {{ .Values.crowdsec.apiKey | quote }}
             {{- end }}
-            {{- if .Values.wazuh.user }}
-            - name: WAZUH_INDEXER_USER
-              value: {{ .Values.wazuh.user | quote }}
-            {{- end }}
-            {{- if .Values.wazuh.password }}
-            - name: WAZUH_INDEXER_PASSWORD
-              value: {{ .Values.wazuh.password | quote }}
-            {{- end }}
+            # Loki (Falco + Lynis)
+            - name: LOKI_URL
+              value: {{ .Values.loki.url | quote }}
           volumeMounts:
             - name: scoring-config
               mountPath: /etc/beacon

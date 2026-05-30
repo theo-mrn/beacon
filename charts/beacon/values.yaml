@@ -1,54 +1,51 @@
 image:
   repository: ghcr.io/theo-mrn/beacon
+
   tag: "sha-9322c1b"
+
+
   pullPolicy: IfNotPresent
 
-# Namespace où beacon sera déployé
 namespace: beacon
 
-# Port du dashboard web
 service:
   port: 8080
 
-# Ingress (IngressRoute Traefik) pour exposer le dashboard
 ingress:
   enabled: false
   host: beacon.cluster.local
   tls: false
 
-# Ressources du pod
 resources:
   requests:
     cpu: 10m
     memory: 64Mi
   limits:
-    cpu: 50m
-    memory: 128Mi
+    cpu: 100m
+    memory: 256Mi
 
-# Persistance SQLite pour le tracking temporel (NEW / MODIFIED)
 persistence:
   enabled: true
   size: 256Mi
-  storageClass: ""   # laisser vide = storageClass par défaut du cluster
+  storageClass: ""
 
 # Intégration Trivy (optionnel)
-# Si ton dashboard Trivy est accessible, renseigne l'URL ici
-# Les VulnerabilityReports seront automatiquement détectés si la CRD existe
 trivy:
-  dashboardURL: ""   # ex: https://trivyhub.cluster.afflair.app
+  dashboardURL: ""
 
 # Notifications webhook (optionnel)
-# Remplis les URLs pour activer les alertes sur les nouveaux endpoints HIGH
-# Ces valeurs surchargent le scoring.yaml embarqué
 webhooks:
   slack: ""
   teams: ""
   discord: ""
   generic: ""
 
-# Intégration Wazuh (optionnel)
-# Connecte beacon à ton indexer Wazuh/OpenSearch pour afficher les alertes de sécurité
-wazuh:
-  indexerURL: "https://indexer.wazuh.svc.cluster.local:9200"
-  user: "admin"
-  password: ""   # à renseigner ou via secret
+# Intégration CrowdSec
+# apiKey : clé générée via cscli bouncers add beacon
+crowdsec:
+  lapiURL: "http://crowdsec-service.crowdsec.svc.cluster.local:8080"
+  apiKey: ""
+
+# Intégration Falco + Lynis via Loki
+loki:
+  url: "http://loki.monitoring.svc.cluster.local:3100"

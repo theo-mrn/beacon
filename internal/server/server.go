@@ -14,11 +14,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/theo-mrn/beacon/internal/crowdsec"
+	"github.com/theo-mrn/beacon/internal/falco"
+	"github.com/theo-mrn/beacon/internal/lynis"
 	"github.com/theo-mrn/beacon/internal/model"
 	"github.com/theo-mrn/beacon/internal/scorer"
 	"github.com/theo-mrn/beacon/internal/store"
 	"github.com/theo-mrn/beacon/internal/watcher"
-	"github.com/theo-mrn/beacon/internal/wazuh"
 )
 
 //go:embed templates/*.html
@@ -30,23 +32,27 @@ var staticFS embed.FS
 type Server struct {
 	watcher   *watcher.KubeWatcher
 	store     *store.Store
-	wazuh     *wazuh.Client
+	crowdsec  *crowdsec.Client
+	falco     *falco.Client
+	lynis     *lynis.Client
 	tmpl      *template.Template
 	clients   map[chan string]struct{}
 	clientsMu sync.Mutex
 }
 
-func New(w *watcher.KubeWatcher, st *store.Store, wz *wazuh.Client) (*Server, error) {
+func New(w *watcher.KubeWatcher, st *store.Store, cs *crowdsec.Client, fc *falco.Client, ly *lynis.Client) (*Server, error) {
 	tmpl, err := template.ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
 	return &Server{
-		watcher: w,
-		store:   st,
-		wazuh:   wz,
-		tmpl:    tmpl,
-		clients: make(map[chan string]struct{}),
+		watcher:  w,
+		store:    st,
+		crowdsec: cs,
+		falco:    fc,
+		lynis:    ly,
+		tmpl:     tmpl,
+		clients:  make(map[chan string]struct{}),
 	}, nil
 }
 
@@ -73,7 +79,9 @@ func (s *Server) Start(ctx context.Context, addr string) {
 	mux.HandleFunc("/api/portals", s.handlePortalsAPI)
 	mux.HandleFunc("/api/review", s.handleReview)
 	mux.HandleFunc("/api/reviews", s.handleReviews)
-	mux.HandleFunc("/api/wazuh", s.handleWazuh)
+	mux.HandleFunc("/api/crowdsec", s.handleCrowdSec)
+	mux.HandleFunc("/api/falco", s.handleFalco)
+	mux.HandleFunc("/api/lynis", s.handleLynis)
 	mux.HandleFunc("/api/topology", s.handleTopology)
 
 	// Root redirect to React app
@@ -207,18 +215,17 @@ func (s *Server) handlePortalsAPI(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(out)
 }
 
-func (s *Server) handleWazuh(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCrowdSec(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	stats := s.wazuh.Stats()
+	stats := s.crowdsec.Stats()
 
-	// Calcule les corrélations avec les endpoints exposés
 	eps := s.snapshot()
-	var infos []wazuh.EndpointInfo
+	var infos []crowdsec.EndpointInfo
 	for _, ep := range eps {
 		if ep.ExternalIP == "" {
 			continue
 		}
-		infos = append(infos, wazuh.EndpointInfo{
+		infos = append(infos, crowdsec.EndpointInfo{
 			Namespace:  ep.Namespace,
 			Name:       ep.ObjectName,
 			URL:        epURL(ep),
@@ -226,8 +233,18 @@ func (s *Server) handleWazuh(w http.ResponseWriter, r *http.Request) {
 			ExternalIP: ep.ExternalIP,
 		})
 	}
-	stats.Correlations = s.wazuh.Correlate(infos)
+	stats.Correlations = s.crowdsec.Correlate(infos)
 	json.NewEncoder(w).Encode(stats)
+}
+
+func (s *Server) handleFalco(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.falco.Stats())
+}
+
+func (s *Server) handleLynis(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.lynis.Stats())
 }
 
 func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
